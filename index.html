@@ -288,6 +288,43 @@ function porDia(){
   return map;
 }
 
+// Relación aprendida entre sedes y organizaciones a partir de lo ya cargado
+function mapasSedeOrg(){
+  const sedeOrg = {};
+  const orgSedes = {};
+  for(const a of actividades){
+    const sedeKey = (a.sede||"").trim().toLowerCase();
+    const orgKey = (a.organizacion||"").trim().toLowerCase();
+    if(sedeKey && a.organizacion && !sedeOrg[sedeKey]) sedeOrg[sedeKey] = a.organizacion;
+    if(orgKey && a.sede){
+      if(!orgSedes[orgKey]) orgSedes[orgKey] = new Set();
+      orgSedes[orgKey].add(a.sede);
+    }
+  }
+  return { sedeOrg, orgSedes };
+}
+function onSedeInput(value){
+  form.sede = value;
+  const { sedeOrg } = mapasSedeOrg();
+  const match = sedeOrg[value.trim().toLowerCase()];
+  if(match && !form.organizacion){
+    form.organizacion = match;
+    const orgInput = document.getElementById("campo-organizacion");
+    if(orgInput) orgInput.value = match;
+  }
+}
+function onOrgInput(value){
+  form.organizacion = value;
+  const { orgSedes } = mapasSedeOrg();
+  const set = orgSedes[value.trim().toLowerCase()];
+  if(set && set.size===1 && !form.sede){
+    const unicaSede = [...set][0];
+    form.sede = unicaSede;
+    const sedeInput = document.getElementById("campo-sede");
+    if(sedeInput) sedeInput.value = unicaSede;
+  }
+}
+
 /* ===================== Render raíz ===================== */
 function renderRoot(){
   render();
@@ -542,10 +579,12 @@ function formModalHtml(){
 
         <div style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Organización</label>
-            <input class="inputStyle" value="${escapeHtml(form.organizacion)}" oninput="updateForm('organizacion', this.value)" /></div>
+            <input id="campo-organizacion" class="inputStyle" value="${escapeHtml(form.organizacion)}" oninput="onOrgInput(this.value)" list="lista-organizaciones" /></div>
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Sede</label>
-            <input class="inputStyle" value="${escapeHtml(form.sede)}" oninput="updateForm('sede', this.value)" /></div>
+            <input id="campo-sede" class="inputStyle" value="${escapeHtml(form.sede)}" oninput="onSedeInput(this.value)" list="lista-sedes" /></div>
         </div>
+        <datalist id="lista-organizaciones">${[...new Set(actividades.map(a=>a.organizacion).filter(Boolean))].map(o=>`<option value="${escapeHtml(o)}"></option>`).join("")}</datalist>
+        <datalist id="lista-sedes">${[...new Set(actividades.map(a=>a.sede).filter(Boolean))].map(s=>`<option value="${escapeHtml(s)}"></option>`).join("")}</datalist>
 
         <div style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>

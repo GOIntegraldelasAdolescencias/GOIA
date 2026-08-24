@@ -29,7 +29,7 @@
     #app{ padding:12px; }
     #app h1{ font-size:18px !important; }
     .navbtn{ font-size:11px !important; padding-left:8px !important; padding-right:8px !important; }
-    .daycell{ min-height:60px !important; padding:4px !important; }
+    .daycell{ height:52px !important; padding:3px !important; }
   }
   @media (max-width: 480px){
     .stack-mobile{ flex-direction:column !important; }
@@ -56,12 +56,12 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ===================== Configuración fija de la agenda ===================== */
 const PROGRAMAS = [
-  { id:"adolescencias", nombre:"Programa Adolescencias", corto:"Adolescencias", color:"#3B6EA8" },
-  { id:"lazos", nombre:"Reconstruyendo Lazos", corto:"Lazos", color:"#C15C4A" },
-  { id:"lideres", nombre:"Líderes Recreativos y Comunitarios", corto:"Líderes", color:"#4C8C5B" },
-  { id:"coopa", nombre:"COOPA", corto:"COOPA", color:"#C79A3B" },
-  { id:"bajoflores", nombre:"Talleres para Adolescentes — Bajo Flores", corto:"Bajo Flores", color:"#7A5CA8" },
-  { id:"turismo", nombre:"Turismo Social", corto:"Turismo Social", color:"#2F8C86" },
+  { id:"adolescencias", nombre:"Programa Adolescencias", corto:"Adolescencias", sigla:"ADOL", color:"#3B6EA8" },
+  { id:"lazos", nombre:"Reconstruyendo Lazos", corto:"Lazos", sigla:"LAZOS", color:"#C15C4A" },
+  { id:"lideres", nombre:"Líderes Recreativos y Comunitarios", corto:"Líderes", sigla:"LÍDERES", color:"#4C8C5B" },
+  { id:"coopa", nombre:"COOPA", corto:"COOPA", sigla:"COOPA", color:"#C79A3B" },
+  { id:"bajoflores", nombre:"Talleres para Adolescentes — Bajo Flores", corto:"Bajo Flores", sigla:"FLORES", color:"#7A5CA8" },
+  { id:"turismo", nombre:"Turismo Social", corto:"Turismo Social", sigla:"TURISMO", color:"#2F8C86" },
 ];
 const ESTADOS_TRAMITE = [
   { id:"completo", label:"Completo", icon:"🟢" },
@@ -86,6 +86,12 @@ const emptyForm = () => ({
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
 });
 const escapeHtml = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const iniciales = titulo => {
+  const palabras = (titulo||"").trim().split(/\s+/).filter(Boolean);
+  if(palabras.length>=2) return (palabras[0][0]+palabras[1][0]).toUpperCase();
+  return (titulo||"").slice(0,2).toUpperCase();
+};
+const inicioSemana = d => { const c=new Date(d); const offset=(c.getDay()+6)%7; c.setDate(c.getDate()-offset); return c; };
 
 // Conversión entre el formulario (camelCase, como usa el resto del código) y las columnas de la tabla (snake_case, como las creamos en el SQL)
 function toRow(f){
@@ -196,12 +202,21 @@ function navegar(delta){
   const c = new Date(cursor);
   if(view==="mes") c.setMonth(c.getMonth()+delta);
   else if(view==="anio") c.setFullYear(c.getFullYear()+delta);
+  else if(view==="semana") c.setDate(c.getDate()+delta*7);
   else if(view==="dia") c.setDate(c.getDate()+delta);
   cursor = c;
   if(view==="dia") selectedDay = dateKey(c);
   renderRoot();
 }
 function irAMes(year, mIdx){ cursor = new Date(year, mIdx, 1); setView("mes"); }
+function etiquetaSemana(cursorDate){
+  const inicio = inicioSemana(cursorDate);
+  const fin = new Date(inicio); fin.setDate(inicio.getDate()+6);
+  if(inicio.getMonth()===fin.getMonth()){
+    return `${inicio.getDate()} al ${fin.getDate()} de ${MESES[inicio.getMonth()]} ${inicio.getFullYear()}`;
+  }
+  return `${inicio.getDate()} ${MESES[inicio.getMonth()].slice(0,3)} – ${fin.getDate()} ${MESES[fin.getMonth()].slice(0,3)} ${fin.getFullYear()}`;
+}
 function setDetailDay(key){ detailDay = key; renderRoot(); }
 
 function abrirNueva(fechaKey){
@@ -430,13 +445,14 @@ function render(){
         <div class="mono" style="font-size:15px; font-weight:600; min-width:170px; text-align:center;">
           ${view==="mes" ? `${MESES[cursor.getMonth()]} ${cursor.getFullYear()}` : ""}
           ${view==="anio" ? `${cursor.getFullYear()}` : ""}
+          ${view==="semana" ? etiquetaSemana(cursor) : ""}
           ${view==="dia" ? `${pad(cursor.getDate())} de ${MESES[cursor.getMonth()]}, ${cursor.getFullYear()}` : ""}
         </div>
         <button class="navbtn" onclick="navegar(1)">›</button>
         <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="irHoy()">Hoy</button>
       </div>
       <div style="display:flex; gap:4px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:3px;">
-        ${[["anio","Año"],["mes","Mes"],["dia","Día"]].map(([id,label])=>`
+        ${[["anio","Año"],["mes","Mes"],["semana","Semana"],["dia","Día"]].map(([id,label])=>`
           <button onclick="setView('${id}')" style="padding:6px 12px; border-radius:6px; background:${view===id?"var(--ink)":"transparent"}; color:${view===id?"#fff":"var(--ink-soft)"}; font-size:13px; font-weight:600;">${label}</button>
         `).join("")}
       </div>
@@ -452,6 +468,7 @@ function render(){
 
   const body = document.getElementById("view-body");
   if(view==="mes") body.innerHTML = renderMes(dias, today);
+  else if(view==="semana") body.innerHTML = renderSemana(dias);
   else if(view==="dia") body.innerHTML = renderDia(dias);
   else body.innerHTML = renderAnio(dias);
 }
@@ -472,14 +489,14 @@ function renderMes(dias, today){
             const dayItems = dias[key] || [];
             const isToday = key===today;
             const isSelected = key===detailDay;
-            return `<div class="daycell" onclick="setDetailDay('${key}')" style="min-height:84px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:6px; opacity:${inMonth?1:0.35}; background:${isSelected?"var(--accent-soft)":"transparent"}; cursor:pointer;">
-              <div class="mono" style="font-size:12px; font-weight:${isToday?700:500}; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center;">${d.getDate()}</div>
-              <div style="margin-top:4px; display:flex; flex-direction:column; gap:2px;">
-                ${dayItems.slice(0,3).map(a=>{
+            return `<div class="daycell" onclick="setDetailDay('${key}')" style="height:62px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:5px; opacity:${inMonth?1:0.35}; background:${isSelected?"var(--accent-soft)":"transparent"}; cursor:pointer; overflow:hidden; box-sizing:border-box;">
+              <div class="mono" style="font-size:12px; font-weight:${isToday?700:500}; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; width:19px; height:19px; border-radius:50%; display:flex; align-items:center; justify-content:center;">${d.getDate()}</div>
+              <div style="margin-top:3px; display:flex; flex-wrap:wrap; gap:2px; max-height:26px; overflow:hidden;">
+                ${dayItems.slice(0,6).map(a=>{
                   const p = programaById(a.programaId);
-                  return `<div onclick="event.stopPropagation(); abrirEdicion('${a.id}')" title="${escapeHtml(a.titulo)}" style="font-size:10.5px; padding:1px 5px; border-radius:4px; background:${p.color}26; color:${p.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600;">${escapeHtml(a.titulo)}</div>`;
+                  return `<div onclick="event.stopPropagation(); abrirEdicion('${a.id}')" title="${escapeHtml(a.titulo)} — ${p.corto}" style="width:16px; height:16px; border-radius:4px; background:${p.color}; color:#fff; font-size:7.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
                 }).join("")}
-                ${dayItems.length>3 ? `<div style="font-size:10px; color:var(--ink-soft);">+${dayItems.length-3} más</div>` : ""}
+                ${dayItems.length>6 ? `<div style="width:16px; height:16px; border-radius:4px; background:var(--ink-soft); color:#fff; font-size:7px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${dayItems.length-6}</div>` : ""}
               </div>
             </div>`;
           }).join("")}
@@ -504,6 +521,32 @@ function renderDia(dias){
       ${items.length===0 ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades registradas para este día.</div>` : ""}
       ${items.map(a=>actividadCardHtml(a,true)).join("")}
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
+    </div>
+  `;
+}
+
+function renderSemana(dias){
+  const inicio = inicioSemana(cursor);
+  const dias7 = [];
+  for(let i=0;i<7;i++){ const d=new Date(inicio); d.setDate(inicio.getDate()+i); dias7.push(d); }
+  const today = dateKey(new Date());
+  return `
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      ${dias7.map(d=>{
+        const key = dateKey(d);
+        const items = (dias[key]||[]).slice().sort((a,b)=>(a.horaInicio||"").localeCompare(b.horaInicio||""));
+        const isToday = key===today;
+        return `
+          <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:12px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <div class="mono" style="font-size:12px; font-weight:700; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; padding:2px 8px; border-radius:6px;">${DIAS_SEMANA[(d.getDay()+6)%7]} ${d.getDate()}</div>
+              <div style="font-size:11px; color:var(--ink-soft);">${MESES[d.getMonth()]}</div>
+            </div>
+            ${items.length===0 ? `<div style="font-size:12.5px; color:var(--ink-soft);">Sin actividades.</div>` : items.map(a=>actividadCardHtml(a,false)).join("")}
+            <button class="navbtn" style="width:100%; padding:6px; font-size:12px; font-weight:600; margin-top:4px;" onclick="abrirNueva('${key}')">+ Agregar</button>
+          </div>
+        `;
+      }).join("")}
     </div>
   `;
 }
@@ -535,8 +578,10 @@ function actividadCardHtml(a, expanded){
   const p = programaById(a.programaId);
   const estado = a.tramiteEstado ? estadoById(a.tramiteEstado) : null;
   return `
-    <div onclick="abrirEdicion('${a.id}')" style="position:relative; overflow:hidden; border:1px solid ${p.color}55; border-radius:8px; padding:10px 82px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff;">
-      <div style="position:absolute; top:0; right:0; background:${p.color}; color:#fff; font-size:9.5px; font-weight:700; padding:5px 9px; border-radius:0 7px 0 9px; text-transform:uppercase; letter-spacing:.03em; max-width:78px; text-align:center; line-height:1.2;">${p.corto}</div>
+    <div onclick="abrirEdicion('${a.id}')" style="position:relative; border:1px solid ${p.color}55; border-radius:8px; padding:10px 34px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+      <div style="position:absolute; top:0; right:0; bottom:0; width:26px; background:${p.color}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+        <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
+      </div>
       <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
       ${a.direccion ? `<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(a.direccion)}</div>` : ""}
@@ -582,10 +627,12 @@ function viewModalHtml(){
   const estado = form.tramiteEstado ? estadoById(form.tramiteEstado) : null;
   return `
     <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
-      <div onclick="event.stopPropagation()" style="position:relative; overflow:hidden; background:#fff; border-radius:14px; padding:22px; width:100%; max-width:440px; max-height:88vh; overflow-y:auto;">
-        <div style="position:absolute; top:0; right:0; background:${p.color}; color:#fff; font-size:11px; font-weight:700; padding:6px 16px; border-radius:0 14px 0 12px; text-transform:uppercase; letter-spacing:.03em;">${p.corto}</div>
+      <div onclick="event.stopPropagation()" style="position:relative; background:#fff; border-radius:14px; padding:22px 40px 22px 22px; width:100%; max-width:440px; max-height:88vh; overflow-y:auto;">
+        <div style="position:absolute; top:0; right:0; bottom:0; width:30px; background:${p.color}; border-radius:0 14px 14px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+          <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:10.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
+        </div>
         <button onclick="cerrarModal()" style="position:absolute; top:10px; left:14px; font-size:18px;">✕</button>
-        <h2 style="font-size:18px; font-weight:700; margin:28px 90px 12px 0;">${escapeHtml(form.titulo)}</h2>
+        <h2 style="font-size:18px; font-weight:700; margin:28px 0 12px 0;">${escapeHtml(form.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px;">
           ${form.sede?`<div>📍 ${escapeHtml(form.sede)}</div>`:""}
           ${form.direccion?`<div>🧭 ${escapeHtml(form.direccion)}</div>`:""}

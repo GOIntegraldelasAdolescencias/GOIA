@@ -73,6 +73,19 @@ const ESTADOS_TRAMITE = [
 ];
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DIAS_SEMANA = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+const PRIORIDADES = [
+  { id:"urgente", label:"Urgente", icon:"🔴", color:"#C24A3D" },
+  { id:"alta", label:"Prioridad alta", icon:"🟠", color:"#C79A3B" },
+  { id:"media", label:"Prioridad media", icon:"🟡", color:"#D8B94A" },
+  { id:"baja", label:"Prioridad baja", icon:"🟢", color:"#4C8C5B" },
+];
+const ESTADOS_TAREA = [
+  { id:"pendiente", label:"Pendiente", icon:"🟡" },
+  { id:"en_curso", label:"En curso", icon:"🔵" },
+  { id:"completada", label:"Completada", icon:"🟢" },
+];
+const prioridadById = id => PRIORIDADES.find(p=>p.id===id) || PRIORIDADES[2];
+const estadoTareaById = id => ESTADOS_TAREA.find(e=>e.id===id) || ESTADOS_TAREA[0];
 
 /* ===================== Helpers ===================== */
 const pad = n => String(n).padStart(2,"0");
@@ -128,6 +141,31 @@ function fromRow(r){
   };
 }
 
+const emptyTareaForm = () => ({
+  id:null, titulo:"", responsable:"", prioridad:"media", estado:"pendiente", fechaLimite:"", observaciones:"",
+});
+function toTareaRow(t){
+  return {
+    titulo: t.titulo,
+    responsable: t.responsable || null,
+    prioridad: t.prioridad || "media",
+    estado: t.estado || "pendiente",
+    fecha_limite: t.fechaLimite || null,
+    observaciones: t.observaciones || null,
+  };
+}
+function fromTareaRow(r){
+  return {
+    id: r.id,
+    titulo: r.titulo || "",
+    responsable: r.responsable || "",
+    prioridad: r.prioridad || "media",
+    estado: r.estado || "pendiente",
+    fechaLimite: r.fecha_limite || "",
+    observaciones: r.observaciones || "",
+  };
+}
+
 /* ===================== Estado ===================== */
 let currentUser = null;
 let loginError = "";
@@ -142,6 +180,12 @@ let detailDay = dateKey(new Date());
 let form = emptyForm();
 let modalOpen = false;
 let modalMode = "form"; // "form" | "view" | "login"
+let modalKind = "actividad"; // "actividad" | "tarea"
+
+let tareas = [];
+let tareasLoaded = false;
+let tareaForm = emptyTareaForm();
+let seccion = "agenda"; // "agenda" | "tareas"
 
 /* ===================== Autenticación ===================== */
 sb.auth.onAuthStateChange((_event, session) => {
@@ -192,6 +236,26 @@ sb.channel("actividades-realtime")
   })
   .subscribe();
 
+async function cargarTareas(){
+  const { data, error } = await sb.from("tareas").select("*").order("created_at", { ascending: true });
+  if(error){
+    console.error(error);
+    return;
+  }
+  tareas = data.map(fromTareaRow);
+  tareasLoaded = true;
+  renderRoot();
+}
+cargarTareas();
+
+sb.channel("tareas-realtime")
+  .on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, () => {
+    cargarTareas();
+  })
+  .subscribe();
+
+function setSeccion(s){ seccion = s; renderRoot(); }
+
 /* ===================== Acciones sobre actividades ===================== */
 function toggleProgramaFiltro(id){ filtro.has(id)?filtro.delete(id):filtro.add(id); renderRoot(); }
 function setSoloUno(id){ filtro = new Set([id]); renderRoot(); }
@@ -222,12 +286,13 @@ function setDetailDay(key){ detailDay = key; renderRoot(); }
 function abrirNueva(fechaKey){
   if(!currentUser){ abrirLogin(); return; }
   form = {...emptyForm(), fecha: fechaKey || dateKey(cursor)};
-  modalMode = "form"; modalOpen = true; renderModal();
+  modalKind = "actividad"; modalMode = "form"; modalOpen = true; renderModal();
 }
 function abrirEdicion(id){
   const act = actividades.find(a=>a.id===id);
   if(!act) return;
   form = {...emptyForm(), ...act, tramiteActivo: !!act.tramiteEstado};
+  modalKind = "actividad";
   modalMode = currentUser ? "form" : "view";
   modalOpen = true; renderModal();
 }
@@ -266,6 +331,52 @@ async function eliminarActividad(id){
   renderModal();
   cargarActividades();
 }
+function abrirNuevaTarea(){
+  if(!currentUser){ abrirLogin(); return; }
+  tareaForm = emptyTareaForm();
+  modalKind = "tarea"; modalMode = "form"; modalOpen = true; renderModal();
+}
+function abrirEdicionTarea(id){
+  const t = tareas.find(x=>x.id===id);
+  if(!t) return;
+  tareaForm = {...t};
+  modalKind = "tarea";
+  modalMode = currentUser ? "form" : "view";
+  modalOpen = true; renderModal();
+}
+function updateTareaForm(field, value){ tareaForm[field] = value; }
+async function guardarTarea(){
+  if(!tareaForm.titulo || !tareaForm.titulo.trim()){ alert("Completá al menos el título de la tarea."); return; }
+  const row = toTareaRow(tareaForm);
+  let error;
+  if(tareaForm.id){
+    ({ error } = await sb.from("tareas").update(row).eq("id", tareaForm.id));
+  } else {
+    ({ error } = await sb.from("tareas").insert(row));
+  }
+  if(error){
+    console.error(error);
+    alert("No se pudo guardar la tarea. Revisá tu conexión o que tengas sesión iniciada.");
+    return;
+  }
+  modalOpen = false;
+  tareaForm = emptyTareaForm();
+  renderModal();
+  cargarTareas();
+}
+async function eliminarTarea(id){
+  if(!confirm("¿Eliminar esta tarea?")) return;
+  const { error } = await sb.from("tareas").delete().eq("id", id);
+  if(error){
+    console.error(error);
+    alert("No se pudo eliminar.");
+    return;
+  }
+  modalOpen = false;
+  renderModal();
+  cargarTareas();
+}
+
 function exportData(){
   const blob = new Blob([JSON.stringify(actividades, null, 2)], {type:"application/json"});
   const url = URL.createObjectURL(blob);
@@ -416,9 +527,29 @@ function render(){
           Importar
           <input type="file" accept="application/json" style="display:none;" onchange="importData(this)" />
         </label>
-        <button onclick="abrirNueva(selectedDay)" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600;">+ Nueva actividad</button>
+        <button onclick="${seccion==='agenda' ? "abrirNueva(selectedDay)" : "abrirNuevaTarea()"}" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600;">${seccion==='agenda' ? "+ Nueva actividad" : "+ Nueva tarea"}</button>
       </div>
     </div>
+
+    <div style="display:flex; gap:6px; margin-bottom:16px;">
+      <button onclick="setSeccion('agenda')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='agenda'?"var(--ink)":"#fff"}; color:${seccion==='agenda'?"#fff":"var(--ink-soft)"};">Agenda</button>
+      <button onclick="setSeccion('tareas')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='tareas'?"var(--ink)":"#fff"}; color:${seccion==='tareas'?"#fff":"var(--ink-soft)"};">Tareas de gerencia${tareas.filter(t=>t.estado!=="completada").length>0 ? ` (${tareas.filter(t=>t.estado!=="completada").length})` : ""}</button>
+    </div>
+
+    ${seccion === "tareas" ? renderTareas() : renderAgenda(consolidado, dias, today)}
+  `;
+
+  if(seccion === "agenda"){
+    const body = document.getElementById("view-body");
+    if(view==="mes") body.innerHTML = renderMes(dias, today);
+    else if(view==="semana") body.innerHTML = renderSemana(dias);
+    else if(view==="dia") body.innerHTML = renderDia(dias);
+    else body.innerHTML = renderAnio(dias);
+  }
+}
+
+function renderAgenda(consolidado, dias, today){
+  return `
 
     ${!dataLoaded ? `<div style="padding:14px; color:var(--ink-soft); font-size:13px;">Sincronizando con la base de datos…</div>` : ""}
 
@@ -465,12 +596,6 @@ function render(){
       Los datos se guardan en una base compartida: lo que cargue cualquier persona con acceso se ve al instante desde cualquier dispositivo.
     </div>
   `;
-
-  const body = document.getElementById("view-body");
-  if(view==="mes") body.innerHTML = renderMes(dias, today);
-  else if(view==="semana") body.innerHTML = renderSemana(dias);
-  else if(view==="dia") body.innerHTML = renderDia(dias);
-  else body.innerHTML = renderAnio(dias);
 }
 
 function renderMes(dias, today){
@@ -521,6 +646,47 @@ function renderDia(dias){
       ${items.length===0 ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades registradas para este día.</div>` : ""}
       ${items.map(a=>actividadCardHtml(a,true)).join("")}
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
+    </div>
+  `;
+}
+
+function renderTareas(){
+  const orden = { urgente:0, alta:1, media:2, baja:3 };
+  const pendientes = tareas.filter(t=>t.estado!=="completada")
+    .slice().sort((a,b)=> (orden[a.prioridad]??9)-(orden[b.prioridad]??9) || (a.fechaLimite||"9999").localeCompare(b.fechaLimite||"9999"));
+  const completadas = tareas.filter(t=>t.estado==="completada");
+  return `
+    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:16px; max-width:680px;">
+      ${!tareasLoaded ? `<div style="font-size:13px; color:var(--ink-soft);">Sincronizando…</div>` : ""}
+      ${(tareasLoaded && pendientes.length===0) ? `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">No hay tareas pendientes.</div>` : ""}
+      ${pendientes.map(t=>tareaCardHtml(t)).join("")}
+      <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:4px;" onclick="abrirNuevaTarea()">+ Nueva tarea</button>
+      ${completadas.length>0 ? `
+        <details style="margin-top:16px;">
+          <summary style="cursor:pointer; font-size:12px; color:var(--ink-soft); font-weight:600;">Completadas (${completadas.length})</summary>
+          <div style="margin-top:8px;">${completadas.map(t=>tareaCardHtml(t)).join("")}</div>
+        </details>
+      ` : ""}
+    </div>
+  `;
+}
+
+function tareaCardHtml(t){
+  const pr = prioridadById(t.prioridad);
+  const es = estadoTareaById(t.estado);
+  const vencida = t.fechaLimite && t.estado!=="completada" && t.fechaLimite < dateKey(new Date());
+  return `
+    <div onclick="abrirEdicionTarea('${t.id}')" style="border:1px solid var(--line); border-left:4px solid ${pr.color}; border-radius:8px; padding:9px 12px; margin-bottom:8px; cursor:pointer; background:#fff;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div style="font-size:13.5px; font-weight:700; ${t.estado==="completada"?"text-decoration:line-through; color:var(--ink-soft);":""}">${escapeHtml(t.titulo)}</div>
+        <span style="font-size:10.5px; font-weight:700; white-space:nowrap; flex-shrink:0;">${pr.icon} ${pr.label}</span>
+      </div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px; display:flex; flex-wrap:wrap; gap:10px;">
+        <span>${es.icon} ${es.label}</span>
+        ${t.responsable?`<span>👤 ${escapeHtml(t.responsable)}</span>`:""}
+        ${t.fechaLimite?`<span class="mono" style="${vencida?"color:#C24A3D; font-weight:700;":""}">📅 ${t.fechaLimite}${vencida?" (vencida)":""}</span>`:""}
+      </div>
+      ${t.observaciones?`<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px; font-style:italic;">${escapeHtml(t.observaciones)}</div>`:""}
     </div>
   `;
 }
@@ -599,6 +765,10 @@ function renderModal(){
   const mc = document.getElementById("modal-container");
   if(!modalOpen){ mc.innerHTML = ""; return; }
   if(modalMode === "login"){ mc.innerHTML = loginModalHtml(); return; }
+  if(modalKind === "tarea"){
+    mc.innerHTML = modalMode === "view" ? viewTareaModalHtml() : formTareaModalHtml();
+    return;
+  }
   if(modalMode === "view"){ mc.innerHTML = viewModalHtml(); return; }
   mc.innerHTML = formModalHtml();
 }
@@ -726,6 +896,77 @@ function formModalHtml(){
         <div style="display:flex; justify-content:space-between; margin-top:16px;">
           ${form.id ? `<button class="navbtn" style="width:auto; color:#B3413A; border-color:#EAB9B2; padding:8px 12px;" onclick="eliminarActividad('${form.id}')">Eliminar</button>` : "<span></span>"}
           <button onclick="guardarActividad()" style="background:var(--accent); color:#fff; border-radius:8px; padding:9px 18px; font-weight:700; font-size:14px;">Guardar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function viewTareaModalHtml(){
+  const t = tareaForm;
+  const pr = prioridadById(t.prioridad);
+  const es = estadoTareaById(t.estado);
+  return `
+    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+      <div onclick="event.stopPropagation()" style="position:relative; background:#fff; border-radius:14px; padding:22px; width:100%; max-width:420px; max-height:88vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <span style="font-size:11px; font-weight:700;">${pr.icon} ${pr.label}</span>
+          <button onclick="cerrarModal()" style="font-size:18px;">✕</button>
+        </div>
+        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0; ${t.estado==="completada"?"text-decoration:line-through;":""}">${escapeHtml(t.titulo)}</h2>
+        <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px;">
+          <div>${es.icon} ${es.label}</div>
+          ${t.responsable?`<div>👤 ${escapeHtml(t.responsable)}</div>`:""}
+          ${t.fechaLimite?`<div class="mono">📅 ${t.fechaLimite}</div>`:""}
+          ${t.observaciones?`<div style="font-style:italic;">${escapeHtml(t.observaciones)}</div>`:""}
+        </div>
+        <button style="width:100%; margin-top:18px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px; font-weight:700; font-size:13px;" onclick="abrirLogin()">Iniciar sesión para editar</button>
+      </div>
+    </div>
+  `;
+}
+
+function formTareaModalHtml(){
+  const t = tareaForm;
+  return `
+    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+      <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:440px; max-height:88vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h2 style="font-size:17px; font-weight:700; margin:0;">${t.id ? "Editar tarea" : "Nueva tarea"}</h2>
+          <button onclick="cerrarModal()" style="font-size:18px;">✕</button>
+        </div>
+
+        <div style="margin-bottom:10px;"><label class="fieldLabel">Tarea *</label>
+          <input class="inputStyle" value="${escapeHtml(t.titulo)}" oninput="updateTareaForm('titulo', this.value)" placeholder="Ej: Firmar convenio con..." />
+        </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Prioridad</label>
+            <select class="inputStyle" onchange="updateTareaForm('prioridad', this.value)">
+              ${PRIORIDADES.map(p=>`<option value="${p.id}" ${t.prioridad===p.id?"selected":""}>${p.icon} ${p.label}</option>`).join("")}
+            </select>
+          </div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Estado</label>
+            <select class="inputStyle" onchange="updateTareaForm('estado', this.value)">
+              ${ESTADOS_TAREA.map(e=>`<option value="${e.id}" ${t.estado===e.id?"selected":""}>${e.icon} ${e.label}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Responsable</label>
+            <input class="inputStyle" value="${escapeHtml(t.responsable)}" oninput="updateTareaForm('responsable', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha límite</label>
+            <input type="date" class="inputStyle" value="${t.fechaLimite}" oninput="updateTareaForm('fechaLimite', this.value)" /></div>
+        </div>
+
+        <div style="margin-bottom:10px;"><label class="fieldLabel">Observaciones</label>
+          <textarea class="inputStyle" rows="2" oninput="updateTareaForm('observaciones', this.value)">${escapeHtml(t.observaciones)}</textarea>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; margin-top:16px;">
+          ${t.id ? `<button class="navbtn" style="width:auto; color:#B3413A; border-color:#EAB9B2; padding:8px 12px;" onclick="eliminarTarea('${t.id}')">Eliminar</button>` : "<span></span>"}
+          <button onclick="guardarTarea()" style="background:var(--accent); color:#fff; border-radius:8px; padding:9px 18px; font-weight:700; font-size:14px;">Guardar</button>
         </div>
       </div>
     </div>

@@ -592,13 +592,15 @@ function render(){
           Importar
           <input type="file" accept="application/json" style="display:none;" onchange="importData(this)" />
         </label>
-        <button onclick="${seccion==='agenda' ? "abrirNueva(selectedDay)" : "abrirNuevaTarea()"}" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600;">${seccion==='agenda' ? "+ Nueva actividad" : "+ Nueva tarea"}</button>
       </div>
     </div>
 
-    <div style="display:flex; gap:6px; margin-bottom:16px;">
-      <button onclick="setSeccion('agenda')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='agenda'?"var(--ink)":"#fff"}; color:${seccion==='agenda'?"#fff":"var(--ink-soft)"};">Agenda</button>
-      <button onclick="setSeccion('tareas')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='tareas'?"var(--ink)":"#fff"}; color:${seccion==='tareas'?"#fff":"var(--ink-soft)"};">Tareas de gerencia${tareas.filter(t=>t.estado!=="completada").length>0 ? ` (${tareas.filter(t=>t.estado!=="completada").length})` : ""}</button>
+    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+      <div style="display:flex; gap:6px;">
+        <button onclick="setSeccion('agenda')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='agenda'?"var(--ink)":"#fff"}; color:${seccion==='agenda'?"#fff":"var(--ink-soft)"};">Agenda</button>
+        <button onclick="setSeccion('tareas')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='tareas'?"var(--ink)":"#fff"}; color:${seccion==='tareas'?"#fff":"var(--ink-soft)"};">Tareas de gerencia${tareas.filter(t=>t.estado!=="completada").length>0 ? ` (${tareas.filter(t=>t.estado!=="completada").length})` : ""}</button>
+      </div>
+      <button onclick="${seccion==='agenda' ? "abrirNueva(selectedDay)" : "abrirNuevaTarea()"}" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600;">${seccion==='agenda' ? "+ Nueva actividad" : "+ Nueva tarea"}</button>
     </div>
 
     ${seccion === "tareas" ? renderTareas() : renderAgenda(consolidado, dias, today)}

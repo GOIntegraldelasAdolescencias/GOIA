@@ -98,6 +98,7 @@ const emptyForm = () => ({
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
+  fechasSueltasActivo:false, fechasSueltas:[],
 });
 function generarFechasRepeticion(inicioStr, hastaStr, tipo){
   const inicio = parseKey(inicioStr);
@@ -119,7 +120,11 @@ function generarFechasRepeticion(inicioStr, hastaStr, tipo){
 function uidGrupo(){
   return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ("g-"+Math.random().toString(36).slice(2)+Date.now());
 }
-function onRepetirChange(value){ form.repetir = value; renderModal(); }
+function onRepetirChange(value){
+  form.repetir = value;
+  if(value !== "none"){ form.esCampamento = false; form.fechasSueltasActivo = false; }
+  renderModal();
+}
 function toggleProgramaForm(id, checked){
   if(checked){ if(!form.programaIds.includes(id)) form.programaIds.push(id); }
   else { form.programaIds = form.programaIds.filter(x=>x!==id); }
@@ -127,6 +132,25 @@ function toggleProgramaForm(id, checked){
 }
 function toggleCampamento(checked){
   form.esCampamento = checked;
+  if(checked){ form.repetir = "none"; form.fechasSueltasActivo = false; }
+  renderModal();
+}
+function toggleFechasSueltas(checked){
+  form.fechasSueltasActivo = checked;
+  if(checked){
+    form.esCampamento = false;
+    form.repetir = "none";
+    if(!form.fechasSueltas || form.fechasSueltas.length===0) form.fechasSueltas = [form.fecha || dateKey(new Date())];
+  }
+  renderModal();
+}
+function agregarFechaSuelta(){ form.fechasSueltas.push(form.fecha || dateKey(new Date())); renderModal(); }
+function quitarFechaSuelta(i){
+  form.fechasSueltas.splice(i,1);
+  if(form.fechasSueltas.length===0) form.fechasSueltas.push(dateKey(new Date()));
+  renderModal();
+}
+function actualizarFechaSuelta(i, value){ form.fechasSueltas[i] = value; }
   if(checked) form.repetir = "none";
   renderModal();
 }
@@ -214,6 +238,7 @@ let form = emptyForm();
 let modalOpen = false;
 let modalMode = "form"; // "form" | "view" | "login"
 let modalKind = "actividad"; // "actividad" | "tarea"
+let nuevaFechaCopia = "";
 
 let tareas = [];
 let tareasLoaded = false;
@@ -325,6 +350,7 @@ function abrirEdicion(id){
   const act = actividades.find(a=>a.id===id);
   if(!act) return;
   form = {...emptyForm(), ...act, direcciones: (act.direcciones&&act.direcciones.length)?act.direcciones:[""], tramiteActivo: !!act.tramiteEstado};
+  nuevaFechaCopia = "";
   modalKind = "actividad";
   modalMode = currentUser ? "form" : "view";
   modalOpen = true; renderModal();
@@ -358,7 +384,10 @@ async function guardarActividad(){
     // Actividad nueva: puede expandirse por repetición y/o por varios programas a la vez
     if(!form.programaIds || form.programaIds.length===0){ alert("Elegí al menos un programa."); return; }
     let fechas = [form.fecha];
-    if(form.esCampamento){
+    if(form.fechasSueltasActivo){
+      fechas = (form.fechasSueltas||[]).filter(Boolean);
+      if(fechas.length===0){ alert("Agregá al menos una fecha."); return; }
+    } else if(form.esCampamento){
       if(!form.fechaHasta){ alert("Elegí la fecha de fin del campamento."); return; }
       fechas = generarFechasRepeticion(form.fecha, form.fechaHasta, "diario");
       if(fechas.length===0){ alert("La fecha de fin tiene que ser posterior a la fecha de inicio."); return; }
@@ -401,6 +430,26 @@ async function guardarActividad(){
   renderModal();
   cargarActividades();
 }
+async function duplicarEnFecha(){
+  if(!nuevaFechaCopia){ alert("Elegí una fecha para la copia."); return; }
+  let grupoId = form.grupoId;
+  if(!grupoId){
+    grupoId = uidGrupo();
+    const { error: errUp } = await sb.from("actividades").update({ grupo_id: grupoId }).eq("id", form.id);
+    if(errUp){ console.error(errUp); alert("No se pudo preparar la actividad original."); return; }
+    form.grupoId = grupoId;
+  }
+  const base = toRow(form);
+  const nuevaFila = { ...base, programa_id: form.programaId, fecha: nuevaFechaCopia, grupo_id: grupoId };
+  const { error } = await sb.from("actividades").insert(nuevaFila);
+  if(error){ console.error(error); alert("No se pudo crear la copia."); return; }
+  const fechaCreada = nuevaFechaCopia;
+  nuevaFechaCopia = "";
+  cargarActividades();
+  renderModal();
+  alert(`Copia creada el ${fechaCreada}.`);
+}
+
 async function eliminarActividad(id){
   const act = actividades.find(a=>a.id===id);
   if(!confirm("¿Eliminar esta actividad?")) return;
@@ -1015,7 +1064,25 @@ function formModalHtml(){
           <label for="campamento" style="font-size:13px; font-weight:600;">🏕️ Es un campamento (se extiende varios días seguidos)</label>
         </div>
 
-        ${!form.esCampamento ? `
+        <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
+          <input type="checkbox" id="fechas-sueltas" ${form.fechasSueltasActivo?"checked":""} onchange="toggleFechasSueltas(this.checked)" />
+          <label for="fechas-sueltas" style="font-size:13px; font-weight:600;">📅 Se repite en varios días sueltos (no seguidos)</label>
+        </div>
+
+        ${form.fechasSueltasActivo ? `
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Fechas *</label>
+          ${form.fechasSueltas.map((f,i)=>`
+            <div style="display:flex; gap:6px; margin-bottom:6px;">
+              <input type="date" class="inputStyle" value="${f}" oninput="actualizarFechaSuelta(${i}, this.value)" />
+              ${form.fechasSueltas.length>1 ? `<button type="button" onclick="quitarFechaSuelta(${i})" style="width:32px; flex-shrink:0; color:#B3413A; border:1px solid var(--line); border-radius:7px;">✕</button>` : ""}
+            </div>
+          `).join("")}
+          <button type="button" onclick="agregarFechaSuelta()" style="font-size:12px; font-weight:600; color:var(--accent);">+ Agregar otra fecha</button>
+        </div>
+        ` : ""}
+
+        ${(!form.esCampamento && !form.fechasSueltasActivo) ? `
         <div class="stack-mobile" style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Repetir</label>
             <select class="inputStyle" onchange="onRepetirChange(this.value)">
@@ -1075,7 +1142,7 @@ function formModalHtml(){
             <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hasta *</label>
             <input type="date" class="inputStyle" value="${form.fechaHasta}" oninput="updateForm('fechaHasta', this.value)" /></div>
-          ` : `
+          ` : (!form.id && form.fechasSueltasActivo) ? `` : `
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>
             <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
           `}
@@ -1108,6 +1175,17 @@ function formModalHtml(){
         <div style="margin-bottom:10px;"><label class="fieldLabel">Observaciones</label>
           <textarea class="inputStyle" rows="2" oninput="updateForm('observaciones', this.value)">${escapeHtml(form.observaciones)}</textarea>
         </div>
+
+        ${form.id ? `
+        <div style="margin:14px 0; padding-top:14px; border-top:1px solid var(--line);">
+          <label class="fieldLabel">Repetir esta actividad en otra fecha puntual</label>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <input type="date" class="inputStyle" value="${nuevaFechaCopia}" oninput="nuevaFechaCopia=this.value" />
+            <button type="button" onclick="duplicarEnFecha()" style="white-space:nowrap; background:var(--accent-soft); color:var(--accent); border-radius:7px; padding:0 14px; font-weight:700; font-size:13px;">+ Duplicar</button>
+          </div>
+          <div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Crea una copia idéntica de esta actividad en la fecha elegida, en el mismo programa.</div>
+        </div>
+        ` : ""}
 
         <div style="display:flex; justify-content:space-between; margin-top:16px;">
           ${form.id ? `<button class="navbtn" style="width:auto; color:#B3413A; border-color:#EAB9B2; padding:8px 12px;" onclick="eliminarActividad('${form.id}')">Eliminar</button>` : "<span></span>"}

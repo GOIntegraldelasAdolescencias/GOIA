@@ -151,9 +151,6 @@ function quitarFechaSuelta(i){
   renderModal();
 }
 function actualizarFechaSuelta(i, value){ form.fechasSueltas[i] = value; }
-  if(checked) form.repetir = "none";
-  renderModal();
-}
 const escapeHtml = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const iniciales = titulo => {
   const palabras = (titulo||"").trim().split(/\s+/).filter(Boolean);

@@ -94,7 +94,7 @@ const parseKey = k => { const [y,m,d]=k.split("-").map(Number); return new Date(
 const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
-  id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direccion:"",
+  id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
@@ -145,7 +145,7 @@ function toRow(f){
     programa_id: f.programaId,
     organizacion: f.organizacion || null,
     sede: f.sede || null,
-    direccion: f.direccion || null,
+    direcciones: (f.direcciones||[]).map(d=>d.trim()).filter(Boolean),
     fecha: f.fecha,
     hora_inicio: f.horaInicio || null,
     hora_fin: f.horaFin || null,
@@ -162,7 +162,7 @@ function fromRow(r){
     programaId: r.programa_id,
     organizacion: r.organizacion || "",
     sede: r.sede || "",
-    direccion: r.direccion || "",
+    direcciones: (r.direcciones && r.direcciones.length) ? r.direcciones : (r.direccion ? [r.direccion] : []),
     fecha: r.fecha,
     horaInicio: r.hora_inicio ? String(r.hora_inicio).slice(0,5) : "",
     horaFin: r.hora_fin ? String(r.hora_fin).slice(0,5) : "",
@@ -324,11 +324,28 @@ function abrirNueva(fechaKey){
 function abrirEdicion(id){
   const act = actividades.find(a=>a.id===id);
   if(!act) return;
-  form = {...emptyForm(), ...act, tramiteActivo: !!act.tramiteEstado};
+  form = {...emptyForm(), ...act, direcciones: (act.direcciones&&act.direcciones.length)?act.direcciones:[""], tramiteActivo: !!act.tramiteEstado};
   modalKind = "actividad";
   modalMode = currentUser ? "form" : "view";
   modalOpen = true; renderModal();
 }
+function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
+function quitarDireccion(i){
+  form.direcciones.splice(i,1);
+  if(form.direcciones.length===0) form.direcciones.push("");
+  renderModal();
+}
+function actualizarDireccion(i, value){ form.direcciones[i] = value; }
+let grupoMiembros = [];
+function abrirGrupoIds(idsStr){
+  const ids = idsStr.split(",");
+  const miembros = ids.map(id => actividades.find(a=>a.id===id)).filter(Boolean);
+  if(miembros.length===0) return;
+  if(miembros.length===1){ abrirEdicion(miembros[0].id); return; }
+  grupoMiembros = miembros;
+  modalKind = "grupo"; modalMode = "view"; modalOpen = true; renderModal();
+}
+
 function cerrarModal(){ modalOpen = false; renderModal(); }
 function updateForm(field, value){ form[field] = value; }
 function toggleTramite(checked){ form.tramiteActivo = checked; renderModal(); }
@@ -500,6 +517,25 @@ function porDia(){
     map[a.fecha].push(a);
   }
   return map;
+}
+// Agrupa por grupo_id (compartidas entre programas) los items que están visibles con el filtro actual.
+// Si sólo uno de los programas de un grupo compartido está visible, se muestra suelto (no como grupo).
+function agruparParaMostrar(items){
+  const grupos = {};
+  const orden = [];
+  for(const it of items){
+    const key = it.grupoId ? `g:${it.grupoId}` : `s:${it.id}`;
+    if(!grupos[key]){ grupos[key] = []; orden.push(key); }
+    grupos[key].push(it);
+  }
+  return orden.map(key => grupos[key]);
+}
+function colorFondoGrupo(miembros){
+  const colores = [...new Set(miembros.map(m=>programaById(m.programaId).color))];
+  if(colores.length<=1) return colores[0] || "#999";
+  const paso = 100/colores.length;
+  const stops = colores.map((c,i)=>`${c} ${Math.round(i*paso)}%, ${c} ${Math.round((i+1)*paso)}%`).join(", ");
+  return `linear-gradient(135deg, ${stops})`;
 }
 
 // Relación aprendida entre sedes y organizaciones a partir de lo ya cargado
@@ -692,11 +728,14 @@ function renderMes(dias, today){
             return `<div class="daycell" onclick="setDetailDay('${key}')" style="height:62px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:5px; opacity:${inMonth?1:0.35}; background:${isSelected?"var(--accent-soft)":"transparent"}; cursor:pointer; overflow:hidden; box-sizing:border-box;">
               <div class="mono" style="font-size:12px; font-weight:${isToday?700:500}; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; width:19px; height:19px; border-radius:50%; display:flex; align-items:center; justify-content:center;">${d.getDate()}</div>
               <div style="margin-top:3px; display:flex; flex-wrap:wrap; gap:2px; max-height:26px; overflow:hidden;">
-                ${dayItems.slice(0,6).map(a=>{
-                  const p = programaById(a.programaId);
-                  return `<div onclick="event.stopPropagation(); abrirEdicion('${a.id}')" title="${escapeHtml(a.titulo)} — ${p.corto}" style="width:16px; height:16px; border-radius:4px; background:${p.color}; color:#fff; font-size:7.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
+                ${agruparParaMostrar(dayItems).slice(0,6).map(miembros=>{
+                  const a = miembros[0];
+                  const fondo = colorFondoGrupo(miembros);
+                  const idsStr = miembros.map(m=>m.id).join(",");
+                  const accion = miembros.length>1 ? `abrirGrupoIds('${idsStr}')` : `abrirEdicion('${a.id}')`;
+                  return `<div onclick="event.stopPropagation(); ${accion}" title="${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="width:16px; height:16px; border-radius:4px; background:${fondo}; color:#fff; font-size:7.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
                 }).join("")}
-                ${dayItems.length>6 ? `<div style="width:16px; height:16px; border-radius:4px; background:var(--ink-soft); color:#fff; font-size:7px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${dayItems.length-6}</div>` : ""}
+                ${agruparParaMostrar(dayItems).length>6 ? `<div style="width:16px; height:16px; border-radius:4px; background:var(--ink-soft); color:#fff; font-size:7px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${agruparParaMostrar(dayItems).length-6}</div>` : ""}
               </div>
             </div>`;
           }).join("")}
@@ -707,7 +746,7 @@ function renderMes(dias, today){
           ${detailDay ? `${parseKey(detailDay).getDate()} de ${MESES[parseKey(detailDay).getMonth()]}` : "Seleccioná un día"}
         </div>
         ${items.length===0 ? `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">Sin actividades registradas.</div>` : ""}
-        ${items.map(a=>actividadCardHtml(a,false)).join("")}
+        ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
         <button class="navbtn" style="width:100%; padding:8px; font-size:13px; font-weight:600; margin-top:6px;" onclick="abrirNueva('${detailDay}')">+ Agregar actividad este día</button>
       </div>
     </div>
@@ -719,7 +758,7 @@ function renderDia(dias){
   return `
     <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:16px; max-width:640px;">
       ${items.length===0 ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades registradas para este día.</div>` : ""}
-      ${items.map(a=>actividadCardHtml(a,true)).join("")}
+      ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,true)).join("")}
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
     </div>
   `;
@@ -783,7 +822,7 @@ function renderSemana(dias){
               <div class="mono" style="font-size:12px; font-weight:700; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; padding:2px 8px; border-radius:6px;">${DIAS_SEMANA[(d.getDay()+6)%7]} ${d.getDate()}</div>
               <div style="font-size:11px; color:var(--ink-soft);">${MESES[d.getMonth()]}</div>
             </div>
-            ${items.length===0 ? `<div style="font-size:12.5px; color:var(--ink-soft);">Sin actividades.</div>` : items.map(a=>actividadCardHtml(a,false)).join("")}
+            ${items.length===0 ? `<div style="font-size:12.5px; color:var(--ink-soft);">Sin actividades.</div>` : agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
             <button class="navbtn" style="width:100%; padding:6px; font-size:12px; font-weight:600; margin-top:4px;" onclick="abrirNueva('${key}')">+ Agregar</button>
           </div>
         `;
@@ -815,6 +854,26 @@ function renderAnio(dias){
   `;
 }
 
+function actividadCardHtmlGrupo(miembros, expanded){
+  if(miembros.length===1) return actividadCardHtml(miembros[0], expanded);
+  const a = miembros[0];
+  const fondo = colorFondoGrupo(miembros);
+  const siglas = miembros.map(m=>(programaById(m.programaId).sigla||programaById(m.programaId).corto)).join(" / ");
+  const idsStr = miembros.map(m=>m.id).join(",");
+  return `
+    <div onclick="abrirGrupoIds('${idsStr}')" style="position:relative; border:1px solid var(--line); border-radius:8px; padding:10px 40px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+      <div style="position:absolute; top:0; right:0; bottom:0; width:34px; background:${fondo}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+        <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:8px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,.3);">${siglas}</span>
+      </div>
+      <div style="font-size:10px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px;">🔗 Compartida entre ${miembros.length} programas</div>
+      <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
+      ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
+      ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
+      ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
+    </div>
+  `;
+}
+
 function actividadCardHtml(a, expanded){
   const p = programaById(a.programaId);
   const estado = a.tramiteEstado ? estadoById(a.tramiteEstado) : null;
@@ -825,7 +884,7 @@ function actividadCardHtml(a, expanded){
       </div>
       <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
-      ${a.direccion ? `<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(a.direccion)}</div>` : ""}
+      ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
       ${a.organizacion ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">🏢 ${escapeHtml(a.organizacion)}</div>` : ""}
       ${(a.personas && expanded) ? `<div style="font-size:11.5px; color:var(--ink-soft);">👤 ${escapeHtml(a.personas)}</div>` : ""}
@@ -840,12 +899,42 @@ function renderModal(){
   const mc = document.getElementById("modal-container");
   if(!modalOpen){ mc.innerHTML = ""; return; }
   if(modalMode === "login"){ mc.innerHTML = loginModalHtml(); return; }
+  if(modalKind === "grupo"){ mc.innerHTML = viewGrupoModalHtml(); return; }
   if(modalKind === "tarea"){
     mc.innerHTML = modalMode === "view" ? viewTareaModalHtml() : formTareaModalHtml();
     return;
   }
   if(modalMode === "view"){ mc.innerHTML = viewModalHtml(); return; }
   mc.innerHTML = formModalHtml();
+}
+
+function viewGrupoModalHtml(){
+  const a = grupoMiembros[0];
+  return `
+    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+      <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:420px; max-height:88vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <span style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase;">🔗 Actividad compartida</span>
+          <button onclick="cerrarModal()" style="font-size:18px;">✕</button>
+        </div>
+        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0;">${escapeHtml(a.titulo)}</h2>
+        <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px; margin-bottom:16px;">
+          ${a.sede?`<div>📍 ${escapeHtml(a.sede)}</div>`:""}
+          <div class="mono">${a.fecha}${a.horaInicio?` · ${a.horaInicio}${a.horaFin?` a ${a.horaFin}`:""}`:""}</div>
+        </div>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;">Se dicta en estos programas — tocá uno para ver o editar</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${grupoMiembros.map(m=>{
+            const p = programaById(m.programaId);
+            return `<button onclick="abrirEdicion('${m.id}')" style="display:flex; align-items:center; gap:8px; text-align:left; border:1px solid ${p.color}55; background:${p.color}14; border-radius:8px; padding:9px 12px;">
+              <span style="width:10px; height:10px; border-radius:50%; background:${p.color}; flex-shrink:0;"></span>
+              <span style="font-size:13px; font-weight:600; color:${p.color};">${p.nombre}</span>
+            </button>`;
+          }).join("")}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function loginModalHtml(){
@@ -880,7 +969,7 @@ function viewModalHtml(){
         <h2 style="font-size:18px; font-weight:700; margin:28px 0 12px 0;">${escapeHtml(form.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px;">
           ${form.sede?`<div>📍 ${escapeHtml(form.sede)}</div>`:""}
-          ${form.direccion?`<div>🧭 ${escapeHtml(form.direccion)}</div>`:""}
+          ${(form.direcciones&&form.direcciones.length) ? form.direcciones.filter(Boolean).map(d=>`<div>🧭 ${escapeHtml(d)}</div>`).join("") : ""}
           <div class="mono">${form.fecha}${form.horaInicio?` · ${form.horaInicio}${form.horaFin?` a ${form.horaFin}`:""}`:""}</div>
           ${form.organizacion?`<div>🏢 ${escapeHtml(form.organizacion)}</div>`:""}
           ${form.personas?`<div>👤 ${escapeHtml(form.personas)}</div>`:""}
@@ -969,8 +1058,15 @@ function formModalHtml(){
           </div>
         </div>
 
-        <div style="margin-bottom:10px;"><label class="fieldLabel">Dirección</label>
-          <input id="campo-direccion" class="inputStyle" value="${escapeHtml(form.direccion)}" oninput="updateForm('direccion', this.value)" placeholder="Calle y número" />
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Direcciones</label>
+          ${form.direcciones.map((d,i)=>`
+            <div style="display:flex; gap:6px; margin-bottom:6px;">
+              <input class="inputStyle" value="${escapeHtml(d)}" oninput="actualizarDireccion(${i}, this.value)" placeholder="Calle y número" />
+              ${form.direcciones.length>1 ? `<button type="button" onclick="quitarDireccion(${i})" style="width:32px; flex-shrink:0; color:#B3413A; border:1px solid var(--line); border-radius:7px;">✕</button>` : ""}
+            </div>
+          `).join("")}
+          <button type="button" onclick="agregarDireccion()" style="font-size:12px; font-weight:600; color:var(--accent);">+ Agregar otra dirección</button>
         </div>
 
         <div class="stack-mobile" style="display:flex; gap:10px;">

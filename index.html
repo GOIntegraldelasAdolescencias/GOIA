@@ -95,9 +95,9 @@ const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
   id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direccion:"",
-  fecha:dateKey(new Date()), horaInicio:"", horaFin:"", personas:"",
+  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
-  repetir:"none", repetirHasta:"", grupoId:null,
+  repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
 });
 function generarFechasRepeticion(inicioStr, hastaStr, tipo){
   const inicio = parseKey(inicioStr);
@@ -107,7 +107,8 @@ function generarFechasRepeticion(inicioStr, hastaStr, tipo){
   let iter = 0;
   while(cursor <= hasta && iter < 500){
     fechas.push(dateKey(cursor));
-    if(tipo === "semanal") cursor.setDate(cursor.getDate()+7);
+    if(tipo === "diario") cursor.setDate(cursor.getDate()+1);
+    else if(tipo === "semanal") cursor.setDate(cursor.getDate()+7);
     else if(tipo === "mensual") cursor.setMonth(cursor.getMonth()+1);
     else if(tipo === "anual") cursor.setFullYear(cursor.getFullYear()+1);
     else break;
@@ -122,6 +123,11 @@ function onRepetirChange(value){ form.repetir = value; renderModal(); }
 function toggleProgramaForm(id, checked){
   if(checked){ if(!form.programaIds.includes(id)) form.programaIds.push(id); }
   else { form.programaIds = form.programaIds.filter(x=>x!==id); }
+  renderModal();
+}
+function toggleCampamento(checked){
+  form.esCampamento = checked;
+  if(checked) form.repetir = "none";
   renderModal();
 }
 const escapeHtml = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -335,7 +341,11 @@ async function guardarActividad(){
     // Actividad nueva: puede expandirse por repetición y/o por varios programas a la vez
     if(!form.programaIds || form.programaIds.length===0){ alert("Elegí al menos un programa."); return; }
     let fechas = [form.fecha];
-    if(form.repetir && form.repetir !== "none"){
+    if(form.esCampamento){
+      if(!form.fechaHasta){ alert("Elegí la fecha de fin del campamento."); return; }
+      fechas = generarFechasRepeticion(form.fecha, form.fechaHasta, "diario");
+      if(fechas.length===0){ alert("La fecha de fin tiene que ser posterior a la fecha de inicio."); return; }
+    } else if(form.repetir && form.repetir !== "none"){
       if(!form.repetirHasta){ alert("Elegí hasta qué fecha se repite."); return; }
       fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
       if(fechas.length===0){ alert("La fecha \"hasta\" tiene que ser posterior a la fecha de inicio."); return; }
@@ -911,6 +921,12 @@ function formModalHtml(){
           ${form.programaIds.length>1 ? `<div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Se va a crear una copia de esta actividad en cada programa elegido.</div>` : ""}
         </div>
 
+        <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
+          <input type="checkbox" id="campamento" ${form.esCampamento?"checked":""} onchange="toggleCampamento(this.checked)" />
+          <label for="campamento" style="font-size:13px; font-weight:600;">🏕️ Es un campamento (se extiende varios días seguidos)</label>
+        </div>
+
+        ${!form.esCampamento ? `
         <div class="stack-mobile" style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Repetir</label>
             <select class="inputStyle" onchange="onRepetirChange(this.value)">
@@ -925,6 +941,7 @@ function formModalHtml(){
             <input type="date" class="inputStyle" value="${form.repetirHasta}" oninput="updateForm('repetirHasta', this.value)" /></div>
           ` : ""}
         </div>
+        ` : ""}
         ` : `
         <div style="margin-bottom:10px;"><label class="fieldLabel">Programa *</label>
           <select class="inputStyle" onchange="updateForm('programaId', this.value)">
@@ -957,8 +974,15 @@ function formModalHtml(){
         </div>
 
         <div class="stack-mobile" style="display:flex; gap:10px;">
+          ${(!form.id && form.esCampamento) ? `
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Desde *</label>
+            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hasta *</label>
+            <input type="date" class="inputStyle" value="${form.fechaHasta}" oninput="updateForm('fechaHasta', this.value)" /></div>
+          ` : `
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>
             <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
+          `}
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora inicio</label>
             <input type="time" class="inputStyle" value="${form.horaInicio}" oninput="updateForm('horaInicio', this.value)" /></div>
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora fin</label>

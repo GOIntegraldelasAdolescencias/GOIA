@@ -94,10 +94,36 @@ const parseKey = k => { const [y,m,d]=k.split("-").map(Number); return new Date(
 const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
-  id:null, titulo:"", programaId:PROGRAMAS[0].id, organizacion:"", sede:"", direccion:"",
+  id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direccion:"",
   fecha:dateKey(new Date()), horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
+  repetir:"none", repetirHasta:"", grupoId:null,
 });
+function generarFechasRepeticion(inicioStr, hastaStr, tipo){
+  const inicio = parseKey(inicioStr);
+  const hasta = parseKey(hastaStr);
+  const fechas = [];
+  const cursor = new Date(inicio);
+  let iter = 0;
+  while(cursor <= hasta && iter < 500){
+    fechas.push(dateKey(cursor));
+    if(tipo === "semanal") cursor.setDate(cursor.getDate()+7);
+    else if(tipo === "mensual") cursor.setMonth(cursor.getMonth()+1);
+    else if(tipo === "anual") cursor.setFullYear(cursor.getFullYear()+1);
+    else break;
+    iter++;
+  }
+  return fechas;
+}
+function uidGrupo(){
+  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ("g-"+Math.random().toString(36).slice(2)+Date.now());
+}
+function onRepetirChange(value){ form.repetir = value; renderModal(); }
+function toggleProgramaForm(id, checked){
+  if(checked){ if(!form.programaIds.includes(id)) form.programaIds.push(id); }
+  else { form.programaIds = form.programaIds.filter(x=>x!==id); }
+  renderModal();
+}
 const escapeHtml = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const iniciales = titulo => {
   const palabras = (titulo||"").trim().split(/\s+/).filter(Boolean);
@@ -138,6 +164,7 @@ function fromRow(r){
     tramiteEstado: r.tramite_estado || null,
     proximoPaso: r.proximo_paso || "",
     observaciones: r.observaciones || "",
+    grupoId: r.grupo_id || null,
   };
 }
 
@@ -301,14 +328,42 @@ function updateForm(field, value){ form[field] = value; }
 function toggleTramite(checked){ form.tramiteActivo = checked; renderModal(); }
 
 async function guardarActividad(){
-  if(!form.titulo || !form.titulo.trim() || !form.fecha){ alert("Completá al menos el título y la fecha."); return; }
-  const row = toRow(form);
-  let error;
-  if(form.id){
-    ({ error } = await sb.from("actividades").update(row).eq("id", form.id));
-  } else {
-    ({ error } = await sb.from("actividades").insert(row));
+  if(!form.titulo || !form.titulo.trim()){ alert("Completá al menos el título."); return; }
+  if(!form.fecha){ alert("Elegí una fecha."); return; }
+
+  if(!form.id){
+    // Actividad nueva: puede expandirse por repetición y/o por varios programas a la vez
+    if(!form.programaIds || form.programaIds.length===0){ alert("Elegí al menos un programa."); return; }
+    let fechas = [form.fecha];
+    if(form.repetir && form.repetir !== "none"){
+      if(!form.repetirHasta){ alert("Elegí hasta qué fecha se repite."); return; }
+      fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
+      if(fechas.length===0){ alert("La fecha \"hasta\" tiene que ser posterior a la fecha de inicio."); return; }
+    }
+    const grupoId = (fechas.length>1 || form.programaIds.length>1) ? uidGrupo() : null;
+    const base = toRow(form);
+    const filas = [];
+    for(const pid of form.programaIds){
+      for(const f of fechas){
+        filas.push({ ...base, programa_id: pid, fecha: f, grupo_id: grupoId });
+      }
+    }
+    const { error } = await sb.from("actividades").insert(filas);
+    if(error){
+      console.error(error);
+      alert("No se pudo guardar. Revisá tu conexión o que tengas sesión iniciada.");
+      return;
+    }
+    modalOpen = false;
+    form = emptyForm();
+    renderModal();
+    cargarActividades();
+    return;
   }
+
+  // Edición de una actividad ya existente (una sola fila)
+  const row = toRow(form);
+  const { error } = await sb.from("actividades").update(row).eq("id", form.id);
   if(error){
     console.error(error);
     alert("No se pudo guardar. Revisá tu conexión o que tengas sesión iniciada.");
@@ -320,7 +375,17 @@ async function guardarActividad(){
   cargarActividades();
 }
 async function eliminarActividad(id){
+  const act = actividades.find(a=>a.id===id);
   if(!confirm("¿Eliminar esta actividad?")) return;
+  if(act && act.grupoId){
+    const borrarGrupo = confirm("Esta actividad es parte de un grupo (por repetición y/o varios programas). Aceptar: borrar TODAS las copias del grupo. Cancelar: borrar solo esta.");
+    if(borrarGrupo){
+      const { error } = await sb.from("actividades").delete().eq("grupo_id", act.grupoId);
+      if(error){ console.error(error); alert("No se pudo eliminar el grupo."); return; }
+      modalOpen = false; renderModal(); cargarActividades();
+      return;
+    }
+  }
   const { error } = await sb.from("actividades").delete().eq("id", id);
   if(error){
     console.error(error);
@@ -831,11 +896,42 @@ function formModalHtml(){
           <input class="inputStyle" value="${escapeHtml(form.titulo)}" oninput="updateForm('titulo', this.value)" placeholder="Ej: Taller de fotografía" />
         </div>
 
+        ${!form.id ? `
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Programa(s) *</label>
+          <div style="display:flex; flex-wrap:wrap; gap:6px;">
+            ${PROGRAMAS.map(p=>{
+              const activo = form.programaIds.includes(p.id);
+              return `<label style="display:flex; align-items:center; gap:5px; font-size:12.5px; border:1.5px solid ${activo?p.color:"var(--line)"}; background:${activo?p.color+"1A":"#fff"}; color:${activo?p.color:"var(--ink-soft)"}; border-radius:999px; padding:5px 10px; cursor:pointer;">
+                <input type="checkbox" style="margin:0;" ${activo?"checked":""} onchange="toggleProgramaForm('${p.id}', this.checked)" />
+                ${p.corto}
+              </label>`;
+            }).join("")}
+          </div>
+          ${form.programaIds.length>1 ? `<div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Se va a crear una copia de esta actividad en cada programa elegido.</div>` : ""}
+        </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Repetir</label>
+            <select class="inputStyle" onchange="onRepetirChange(this.value)">
+              <option value="none" ${form.repetir==="none"?"selected":""}>No repetir</option>
+              <option value="semanal" ${form.repetir==="semanal"?"selected":""}>Cada semana</option>
+              <option value="mensual" ${form.repetir==="mensual"?"selected":""}>Cada mes</option>
+              <option value="anual" ${form.repetir==="anual"?"selected":""}>Cada año</option>
+            </select>
+          </div>
+          ${form.repetir && form.repetir!=="none" ? `
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Repetir hasta *</label>
+            <input type="date" class="inputStyle" value="${form.repetirHasta}" oninput="updateForm('repetirHasta', this.value)" /></div>
+          ` : ""}
+        </div>
+        ` : `
         <div style="margin-bottom:10px;"><label class="fieldLabel">Programa *</label>
           <select class="inputStyle" onchange="updateForm('programaId', this.value)">
             ${PROGRAMAS.map(p=>`<option value="${p.id}" ${form.programaId===p.id?"selected":""}>${p.nombre}</option>`).join("")}
           </select>
         </div>
+        `}
 
         <div class="stack-mobile" style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1; position:relative;">

@@ -775,19 +775,26 @@ function renderMes(dias, today){
             const key = dateKey(d);
             const inMonth = d.getMonth()===cursor.getMonth();
             const dayItems = dias[key] || [];
+            const tareasDia = tareas.filter(t=>t.fechaLimite===key && t.estado!=="completada");
+            const gruposDia = agruparParaMostrar(dayItems);
+            const totalChips = gruposDia.length + tareasDia.length;
             const isToday = key===today;
             const isSelected = key===detailDay;
             return `<div class="daycell" onclick="setDetailDay('${key}')" style="height:62px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:5px; opacity:${inMonth?1:0.35}; background:${isSelected?"var(--accent-soft)":"transparent"}; cursor:pointer; overflow:hidden; box-sizing:border-box;">
               <div class="mono" style="font-size:12px; font-weight:${isToday?700:500}; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; width:19px; height:19px; border-radius:50%; display:flex; align-items:center; justify-content:center;">${d.getDate()}</div>
               <div style="margin-top:3px; display:flex; flex-wrap:wrap; gap:2px; max-height:26px; overflow:hidden;">
-                ${agruparParaMostrar(dayItems).slice(0,6).map(miembros=>{
+                ${gruposDia.slice(0,6).map(miembros=>{
                   const a = miembros[0];
                   const fondo = colorFondoGrupo(miembros);
                   const idsStr = miembros.map(m=>m.id).join(",");
                   const accion = miembros.length>1 ? `abrirGrupoIds('${idsStr}')` : `abrirEdicion('${a.id}')`;
                   return `<div onclick="event.stopPropagation(); ${accion}" title="${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="width:16px; height:16px; border-radius:4px; background:${fondo}; color:#fff; font-size:7.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
                 }).join("")}
-                ${agruparParaMostrar(dayItems).length>6 ? `<div style="width:16px; height:16px; border-radius:4px; background:var(--ink-soft); color:#fff; font-size:7px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${agruparParaMostrar(dayItems).length-6}</div>` : ""}
+                ${tareasDia.slice(0, Math.max(0,6-gruposDia.length)).map(t=>{
+                  const pr = prioridadById(t.prioridad);
+                  return `<div onclick="event.stopPropagation(); abrirEdicionTarea('${t.id}')" title="Tarea: ${escapeHtml(t.titulo)} (${pr.label})" style="width:16px; height:16px; border-radius:50%; background:${pr.color}; color:#fff; font-size:9px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</div>`;
+                }).join("")}
+                ${totalChips>6 ? `<div style="width:16px; height:16px; border-radius:4px; background:var(--ink-soft); color:#fff; font-size:7px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${totalChips-6}</div>` : ""}
               </div>
             </div>`;
           }).join("")}
@@ -797,8 +804,9 @@ function renderMes(dias, today){
         <div class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">
           ${detailDay ? `${parseKey(detailDay).getDate()} de ${MESES[parseKey(detailDay).getMonth()]}` : "Seleccioná un día"}
         </div>
-        ${items.length===0 ? `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">Sin actividades registradas.</div>` : ""}
+        ${(items.length===0 && tareas.filter(t=>t.fechaLimite===detailDay && t.estado!=="completada").length===0) ? `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">Sin actividades ni tareas registradas.</div>` : ""}
         ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
+        ${tareas.filter(t=>t.fechaLimite===detailDay && t.estado!=="completada").map(t=>tareaCardHtml(t)).join("")}
         <button class="navbtn" style="width:100%; padding:8px; font-size:13px; font-weight:600; margin-top:6px;" onclick="abrirNueva('${detailDay}')">+ Agregar actividad este día</button>
       </div>
     </div>
@@ -807,10 +815,12 @@ function renderMes(dias, today){
 
 function renderDia(dias){
   const items = (dias[dateKey(cursor)] || []).slice().sort((a,b)=>(a.horaInicio||"").localeCompare(b.horaInicio||""));
+  const tareasDelDia = tareas.filter(t=>t.fechaLimite===dateKey(cursor) && t.estado!=="completada");
   return `
     <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:16px; max-width:640px;">
-      ${items.length===0 ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades registradas para este día.</div>` : ""}
+      ${(items.length===0 && tareasDelDia.length===0) ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades ni tareas registradas para este día.</div>` : ""}
       ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,true)).join("")}
+      ${tareasDelDia.map(t=>tareaCardHtml(t)).join("")}
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
     </div>
   `;
@@ -867,6 +877,7 @@ function renderSemana(dias){
       ${dias7.map(d=>{
         const key = dateKey(d);
         const items = (dias[key]||[]).slice().sort((a,b)=>(a.horaInicio||"").localeCompare(b.horaInicio||""));
+        const tareasDia = tareas.filter(t=>t.fechaLimite===key && t.estado!=="completada");
         const isToday = key===today;
         return `
           <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:12px;">
@@ -874,7 +885,9 @@ function renderSemana(dias){
               <div class="mono" style="font-size:12px; font-weight:700; color:${isToday?"#fff":"var(--ink)"}; background:${isToday?"var(--accent)":"transparent"}; padding:2px 8px; border-radius:6px;">${DIAS_SEMANA[(d.getDay()+6)%7]} ${d.getDate()}</div>
               <div style="font-size:11px; color:var(--ink-soft);">${MESES[d.getMonth()]}</div>
             </div>
-            ${items.length===0 ? `<div style="font-size:12.5px; color:var(--ink-soft);">Sin actividades.</div>` : agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
+            ${(items.length===0 && tareasDia.length===0) ? `<div style="font-size:12.5px; color:var(--ink-soft);">Sin actividades ni tareas.</div>` : ""}
+            ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
+            ${tareasDia.map(t=>tareaCardHtml(t)).join("")}
             <button class="navbtn" style="width:100%; padding:6px; font-size:12px; font-weight:600; margin-top:4px;" onclick="abrirNueva('${key}')">+ Agregar</button>
           </div>
         `;

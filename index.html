@@ -80,13 +80,12 @@ const ESTADOS_TRAMITE = [
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DIAS_SEMANA = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
 const TIPOS_REPETICION = [
-  { id:"unica", label:"Única" },
-  { id:"semanal", label:"Semanal" },
-  { id:"mensual", label:"Mensual" },
-  { id:"anual", label:"Anual" },
-  { id:"campamento", label:"Campamento" },
-  { id:"sueltas", label:"Fechas sueltas" },
+  { id:"unica", label:"Evento único" },
+  { id:"normal", label:"Jornada normal" },
 ];
+function categoriaTipo(tipo){
+  return (!tipo || tipo === "unica") ? "unica" : "normal";
+}
 const PRIORIDADES = [
   { id:"urgente", label:"Urgente", icon:"🔴", color:"#C24A3D" },
   { id:"alta", label:"Prioridad alta", icon:"🟠", color:"#C79A3B" },
@@ -112,6 +111,7 @@ const emptyForm = () => ({
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
+  tipoRepeticion:"unica",
   fechasSueltasActivo:false, fechasSueltas:[],
 });
 function generarFechasRepeticion(inicioStr, hastaStr, tipo){
@@ -188,6 +188,7 @@ function toRow(f){
     tramite_estado: f.tramiteActivo ? f.tramiteEstado : null,
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
     observaciones: f.observaciones || null,
+    tipo_repeticion: f.tipoRepeticion || "unica",
   };
 }
 function fromRow(r){
@@ -390,6 +391,7 @@ function abrirGrupoIds(idsStr){
 
 function cerrarModal(){ modalOpen = false; renderModal(); }
 function updateForm(field, value){ form[field] = value; }
+function setTipoRepeticion(value){ form.tipoRepeticion = value; renderModal(); }
 function toggleTramite(checked){ form.tramiteActivo = checked; renderModal(); }
 
 async function guardarActividad(){
@@ -403,26 +405,18 @@ async function guardarActividad(){
     if(form.fechasSueltasActivo){
       fechas = (form.fechasSueltas||[]).filter(Boolean);
       if(fechas.length===0){ alert("Agregá al menos una fecha."); return; }
-    } else if(form.esCampamento){
-      if(!form.fechaHasta){ alert("Elegí la fecha de fin del campamento."); return; }
-      fechas = generarFechasRepeticion(form.fecha, form.fechaHasta, "diario");
-      if(fechas.length===0){ alert("La fecha de fin tiene que ser posterior a la fecha de inicio."); return; }
     } else if(form.repetir && form.repetir !== "none"){
       if(!form.repetirHasta){ alert("Elegí hasta qué fecha se repite."); return; }
       fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
       if(fechas.length===0){ alert("La fecha \"hasta\" tiene que ser posterior a la fecha de inicio."); return; }
     }
-    let tipoRepeticion = "unica";
-    if(form.fechasSueltasActivo) tipoRepeticion = "sueltas";
-    else if(form.esCampamento) tipoRepeticion = "campamento";
-    else if(form.repetir && form.repetir !== "none") tipoRepeticion = form.repetir;
 
     const grupoId = (fechas.length>1 || form.programaIds.length>1) ? uidGrupo() : null;
     const base = toRow(form);
     const filas = [];
     for(const pid of form.programaIds){
       for(const f of fechas){
-        filas.push({ ...base, programa_id: pid, fecha: f, grupo_id: grupoId, tipo_repeticion: tipoRepeticion });
+        filas.push({ ...base, programa_id: pid, fecha: f, grupo_id: grupoId });
       }
     }
     const { error } = await sb.from("actividades").insert(filas);
@@ -583,7 +577,7 @@ function porDia(){
   const map = {};
   for(const a of actividades){
     if(!filtro.has(a.programaId)) continue;
-    if(!filtroTipo.has(a.tipoRepeticion || "unica")) continue;
+    if(!filtroTipo.has(categoriaTipo(a.tipoRepeticion))) continue;
     if(!map[a.fecha]) map[a.fecha]=[];
     map[a.fecha].push(a);
   }
@@ -1095,6 +1089,14 @@ function formModalHtml(){
           <input class="inputStyle" value="${escapeHtml(form.titulo)}" oninput="updateForm('titulo', this.value)" placeholder="Ej: Taller de fotografía" />
         </div>
 
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Tipo de actividad *</label>
+          <div style="display:flex; gap:8px;">
+            <button type="button" onclick="setTipoRepeticion('unica')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${form.tipoRepeticion==='unica'?"var(--accent)":"var(--line)"}; background:${form.tipoRepeticion==='unica'?"var(--accent-soft)":"#fff"}; color:${form.tipoRepeticion==='unica'?"var(--accent)":"var(--ink-soft)"};">Evento único</button>
+            <button type="button" onclick="setTipoRepeticion('normal')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${form.tipoRepeticion==='normal'?"var(--accent)":"var(--line)"}; background:${form.tipoRepeticion==='normal'?"var(--accent-soft)":"#fff"}; color:${form.tipoRepeticion==='normal'?"var(--accent)":"var(--ink-soft)"};">Jornada normal</button>
+          </div>
+        </div>
+
         ${!form.id ? `
         <div style="margin-bottom:10px;">
           <label class="fieldLabel">Programa(s) *</label>
@@ -1108,11 +1110,6 @@ function formModalHtml(){
             }).join("")}
           </div>
           ${form.programaIds.length>1 ? `<div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Se va a crear una copia de esta actividad en cada programa elegido.</div>` : ""}
-        </div>
-
-        <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
-          <input type="checkbox" id="campamento" ${form.esCampamento?"checked":""} onchange="toggleCampamento(this.checked)" />
-          <label for="campamento" style="font-size:13px; font-weight:600;">🏕️ Es un campamento (se extiende varios días seguidos)</label>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
@@ -1133,11 +1130,12 @@ function formModalHtml(){
         </div>
         ` : ""}
 
-        ${(!form.esCampamento && !form.fechasSueltasActivo) ? `
+        ${!form.fechasSueltasActivo ? `
         <div class="stack-mobile" style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Repetir</label>
             <select class="inputStyle" onchange="onRepetirChange(this.value)">
-              <option value="none" ${form.repetir==="none"?"selected":""}>No repetir</option>
+              <option value="none" ${form.repetir==="none"?"selected":""}>No repetir (evento único)</option>
+              <option value="diario" ${form.repetir==="diario"?"selected":""}>Cada día (para extender varios días seguidos, ej. campamentos)</option>
               <option value="semanal" ${form.repetir==="semanal"?"selected":""}>Cada semana</option>
               <option value="mensual" ${form.repetir==="mensual"?"selected":""}>Cada mes</option>
               <option value="anual" ${form.repetir==="anual"?"selected":""}>Cada año</option>

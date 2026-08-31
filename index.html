@@ -111,9 +111,23 @@ const emptyForm = () => ({
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
-  tipoRepeticion:"unica",
+  tipoRepeticion:"unica", diasSemana:[],
   fechasSueltasActivo:false, fechasSueltas:[],
 });
+function generarFechasSemanales(inicioStr, hastaStr, diasSemana){
+  const inicio = parseKey(inicioStr);
+  const hasta = parseKey(hastaStr);
+  const fechas = [];
+  const cursor = new Date(inicio);
+  let iter = 0;
+  while(cursor <= hasta && iter < 1000){
+    const diaIdx = (cursor.getDay()+6)%7; // 0=Lun ... 6=Dom, igual criterio que DIAS_SEMANA
+    if(diasSemana.includes(diaIdx)) fechas.push(dateKey(cursor));
+    cursor.setDate(cursor.getDate()+1);
+    iter++;
+  }
+  return fechas;
+}
 function generarFechasRepeticion(inicioStr, hastaStr, tipo){
   const inicio = parseKey(inicioStr);
   const hasta = parseKey(hastaStr);
@@ -137,6 +151,23 @@ function uidGrupo(){
 function onRepetirChange(value){
   form.repetir = value;
   if(value !== "none"){ form.esCampamento = false; form.fechasSueltasActivo = false; }
+  if(value === "semanal" && (!form.diasSemana || form.diasSemana.length===0) && form.fecha){
+    const d = parseKey(form.fecha);
+    form.diasSemana = [(d.getDay()+6)%7];
+  }
+  renderModal();
+}
+function toggleDiaSemana(idx){
+  if(!form.diasSemana) form.diasSemana = [];
+  if(form.diasSemana.includes(idx)) form.diasSemana = form.diasSemana.filter(x=>x!==idx);
+  else form.diasSemana = [...form.diasSemana, idx].sort();
+  renderModal();
+}
+function completarHastaMeses(n){
+  if(!form.fecha) return;
+  const d = parseKey(form.fecha);
+  d.setMonth(d.getMonth()+n);
+  form.repetirHasta = dateKey(d);
   renderModal();
 }
 function toggleProgramaForm(id, checked){
@@ -391,7 +422,13 @@ function abrirGrupoIds(idsStr){
 
 function cerrarModal(){ modalOpen = false; renderModal(); }
 function updateForm(field, value){ form[field] = value; }
-function setTipoRepeticion(value){ form.tipoRepeticion = value; renderModal(); }
+function setTipoRepeticion(value){
+  form.tipoRepeticion = value;
+  if(value === "normal" && (!form.repetir || form.repetir === "none")){
+    form.repetir = "semanal";
+  }
+  renderModal();
+}
 function toggleTramite(checked){ form.tramiteActivo = checked; renderModal(); }
 
 async function guardarActividad(){
@@ -407,7 +444,11 @@ async function guardarActividad(){
       if(fechas.length===0){ alert("Agregá al menos una fecha."); return; }
     } else if(form.repetir && form.repetir !== "none"){
       if(!form.repetirHasta){ alert("Elegí hasta qué fecha se repite."); return; }
-      fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
+      if(form.repetir === "semanal" && form.diasSemana && form.diasSemana.length>0){
+        fechas = generarFechasSemanales(form.fecha, form.repetirHasta, form.diasSemana);
+      } else {
+        fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
+      }
       if(fechas.length===0){ alert("La fecha \"hasta\" tiene que ser posterior a la fecha de inicio."); return; }
     }
 
@@ -1146,6 +1187,28 @@ function formModalHtml(){
             <input type="date" class="inputStyle" value="${form.repetirHasta}" oninput="updateForm('repetirHasta', this.value)" /></div>
           ` : ""}
         </div>
+
+        ${form.repetir==="semanal" ? `
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Días de la semana en que se repite</label>
+          <div style="display:flex; flex-wrap:wrap; gap:6px;">
+            ${DIAS_SEMANA.map((d,idx)=>{
+              const activo = (form.diasSemana||[]).includes(idx);
+              return `<button type="button" onclick="toggleDiaSemana(${idx})" style="padding:6px 12px; border-radius:999px; font-size:12.5px; font-weight:600; border:1.5px solid ${activo?"var(--accent)":"var(--line)"}; background:${activo?"var(--accent-soft)":"#fff"}; color:${activo?"var(--accent)":"var(--ink-soft)"};">${d}</button>`;
+            }).join("")}
+          </div>
+          <div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Ej: tildá Lun, Mié y Vie para una actividad que se dicta esos tres días cada semana.</div>
+        </div>
+        ` : ""}
+
+        ${form.repetir && form.repetir!=="none" ? `
+        <div style="margin-bottom:10px;">
+          <span class="fieldLabel" style="display:inline;">Completar "hasta" rápido:</span>
+          <button type="button" onclick="completarHastaMeses(4)" style="font-size:11.5px; font-weight:600; color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:3px 9px; margin-right:5px;">+ Cuatrimestre</button>
+          <button type="button" onclick="completarHastaMeses(6)" style="font-size:11.5px; font-weight:600; color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:3px 9px; margin-right:5px;">+ Semestre</button>
+          <button type="button" onclick="completarHastaMeses(12)" style="font-size:11.5px; font-weight:600; color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:3px 9px;">+ Año</button>
+        </div>
+        ` : ""}
         ` : ""}
         ` : `
         <div style="margin-bottom:10px;"><label class="fieldLabel">Programa *</label>

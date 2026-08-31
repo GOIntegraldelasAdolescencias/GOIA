@@ -79,6 +79,14 @@ const ESTADOS_TRAMITE = [
 ];
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DIAS_SEMANA = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+const TIPOS_REPETICION = [
+  { id:"unica", label:"Única" },
+  { id:"semanal", label:"Semanal" },
+  { id:"mensual", label:"Mensual" },
+  { id:"anual", label:"Anual" },
+  { id:"campamento", label:"Campamento" },
+  { id:"sueltas", label:"Fechas sueltas" },
+];
 const PRIORIDADES = [
   { id:"urgente", label:"Urgente", icon:"🔴", color:"#C24A3D" },
   { id:"alta", label:"Prioridad alta", icon:"🟠", color:"#C79A3B" },
@@ -198,6 +206,7 @@ function fromRow(r){
     proximoPaso: r.proximo_paso || "",
     observaciones: r.observaciones || "",
     grupoId: r.grupo_id || null,
+    tipoRepeticion: r.tipo_repeticion || "unica",
   };
 }
 
@@ -236,6 +245,7 @@ let view = "mes";
 let cursor = new Date();
 let selectedDay = dateKey(new Date());
 let filtro = new Set(PROGRAMAS.map(p=>p.id));
+let filtroTipo = new Set(TIPOS_REPETICION.map(t=>t.id));
 let detailDay = dateKey(new Date());
 let form = emptyForm();
 let modalOpen = false;
@@ -321,6 +331,9 @@ function setSeccion(s){ seccion = s; renderRoot(); }
 function toggleProgramaFiltro(id){ filtro.has(id)?filtro.delete(id):filtro.add(id); renderRoot(); }
 function setSoloUno(id){ filtro = new Set([id]); renderRoot(); }
 function setTodos(){ filtro = new Set(PROGRAMAS.map(p=>p.id)); renderRoot(); }
+function toggleTipoFiltro(id){ filtroTipo.has(id)?filtroTipo.delete(id):filtroTipo.add(id); renderRoot(); }
+function setSoloUnTipo(id){ filtroTipo = new Set([id]); renderRoot(); }
+function setTodosTipos(){ filtroTipo = new Set(TIPOS_REPETICION.map(t=>t.id)); renderRoot(); }
 function setView(v){ view = v; renderRoot(); }
 function irHoy(){ cursor = new Date(); selectedDay = dateKey(cursor); detailDay = dateKey(cursor); renderRoot(); }
 function navegar(delta){
@@ -399,12 +412,17 @@ async function guardarActividad(){
       fechas = generarFechasRepeticion(form.fecha, form.repetirHasta, form.repetir);
       if(fechas.length===0){ alert("La fecha \"hasta\" tiene que ser posterior a la fecha de inicio."); return; }
     }
+    let tipoRepeticion = "unica";
+    if(form.fechasSueltasActivo) tipoRepeticion = "sueltas";
+    else if(form.esCampamento) tipoRepeticion = "campamento";
+    else if(form.repetir && form.repetir !== "none") tipoRepeticion = form.repetir;
+
     const grupoId = (fechas.length>1 || form.programaIds.length>1) ? uidGrupo() : null;
     const base = toRow(form);
     const filas = [];
     for(const pid of form.programaIds){
       for(const f of fechas){
-        filas.push({ ...base, programa_id: pid, fecha: f, grupo_id: grupoId });
+        filas.push({ ...base, programa_id: pid, fecha: f, grupo_id: grupoId, tipo_repeticion: tipoRepeticion });
       }
     }
     const { error } = await sb.from("actividades").insert(filas);
@@ -565,6 +583,7 @@ function porDia(){
   const map = {};
   for(const a of actividades){
     if(!filtro.has(a.programaId)) continue;
+    if(!filtroTipo.has(a.tipoRepeticion || "unica")) continue;
     if(!map[a.fecha]) map[a.fecha]=[];
     map[a.fecha].push(a);
   }
@@ -728,6 +747,22 @@ function renderAgenda(consolidado, dias, today){
             style="display:flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; font-size:13px; font-weight:500;
             border:1.5px solid ${activo?p.color:"var(--line)"}; background:${activo?p.color+"1A":"#fff"}; color:${activo?p.color:"var(--ink-soft)"};">
             <span style="width:8px; height:8px; border-radius:50%; background:${p.color}; flex-shrink:0;"></span>${p.corto}
+          </button>`;
+        }).join("")}
+      </div>
+    </div>
+
+    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <span class="mono" style="font-size:11px; letter-spacing:.08em; color:var(--ink-soft); text-transform:uppercase;">Tipo de repetición</span>
+        <button onclick="setTodosTipos()" style="font-size:12px; font-weight:600; color:${filtroTipo.size===TIPOS_REPETICION.length?"var(--accent)":"var(--ink-soft)"}; background:${filtroTipo.size===TIPOS_REPETICION.length?"var(--accent-soft)":"transparent"}; border:1px solid ${filtroTipo.size===TIPOS_REPETICION.length?"var(--accent)":"var(--line)"}; border-radius:6px; padding:4px 10px;">Todas</button>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        ${TIPOS_REPETICION.map(t=>{
+          const activo = filtroTipo.has(t.id);
+          return `<button class="chip" onclick="toggleTipoFiltro('${t.id}')" ondblclick="setSoloUnTipo('${t.id}')" title="Clic: mostrar/ocultar · Doble clic: ver solo este tipo"
+            style="padding:6px 12px; border-radius:999px; font-size:13px; font-weight:500;
+            border:1.5px solid ${activo?"var(--accent)":"var(--line)"}; background:${activo?"var(--accent-soft)":"#fff"}; color:${activo?"var(--accent)":"var(--ink-soft)"};">${t.label}
           </button>`;
         }).join("")}
       </div>

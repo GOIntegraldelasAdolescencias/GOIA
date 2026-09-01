@@ -366,7 +366,13 @@ function setTodos(){ filtro = new Set(PROGRAMAS.map(p=>p.id)); renderRoot(); }
 function toggleTipoFiltro(id){ filtroTipo.has(id)?filtroTipo.delete(id):filtroTipo.add(id); renderRoot(); }
 function setSoloUnTipo(id){ filtroTipo = new Set([id]); renderRoot(); }
 function setTodosTipos(){ filtroTipo = new Set(TIPOS_REPETICION.map(t=>t.id)); renderRoot(); }
-function setView(v){ view = v; renderRoot(); }
+function setView(v){
+  view = v;
+  if((v === "dia" || v === "semana") && detailDay){
+    cursor = parseKey(detailDay);
+  }
+  renderRoot();
+}
 function irHoy(){ cursor = new Date(); selectedDay = dateKey(cursor); detailDay = dateKey(cursor); renderRoot(); }
 function navegar(delta){
   const c = new Date(cursor);

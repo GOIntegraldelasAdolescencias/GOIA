@@ -333,9 +333,15 @@ async function cargarActividades(){
 }
 cargarActividades();
 
+let recargaActividadesTimeout = null;
+function programarRecargaActividades(){
+  if(recargaActividadesTimeout) clearTimeout(recargaActividadesTimeout);
+  recargaActividadesTimeout = setTimeout(() => { cargarActividades(); }, 700);
+}
+
 sb.channel("actividades-realtime")
   .on("postgres_changes", { event: "*", schema: "public", table: "actividades" }, () => {
-    cargarActividades();
+    programarRecargaActividades();
   })
   .subscribe();
 
@@ -351,9 +357,15 @@ async function cargarTareas(){
 }
 cargarTareas();
 
+let recargaTareasTimeout = null;
+function programarRecargaTareas(){
+  if(recargaTareasTimeout) clearTimeout(recargaTareasTimeout);
+  recargaTareasTimeout = setTimeout(() => { cargarTareas(); }, 700);
+}
+
 sb.channel("tareas-realtime")
   .on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, () => {
-    cargarTareas();
+    programarRecargaTareas();
   })
   .subscribe();
 

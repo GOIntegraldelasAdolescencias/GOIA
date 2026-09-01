@@ -321,13 +321,21 @@ window.__submitLogin = () => {
 
 /* ===================== Datos: carga inicial + tiempo real ===================== */
 async function cargarActividades(){
-  const { data, error } = await sb.from("actividades").select("*").order("fecha", { ascending: true });
-  if(error){
-    console.error(error);
-    alert("No se pudo conectar con la base de datos. Revisá SUPABASE_URL / SUPABASE_ANON_KEY y las políticas de la tabla.");
-    return;
+  let todas = [];
+  let desde = 0;
+  const TAMANO_PAGINA = 1000;
+  while(true){
+    const { data, error } = await sb.from("actividades").select("*").order("fecha", { ascending: true }).range(desde, desde + TAMANO_PAGINA - 1);
+    if(error){
+      console.error(error);
+      alert("No se pudo conectar con la base de datos. Revisá SUPABASE_URL / SUPABASE_ANON_KEY y las políticas de la tabla.");
+      return;
+    }
+    todas = todas.concat(data);
+    if(data.length < TAMANO_PAGINA) break;
+    desde += TAMANO_PAGINA;
   }
-  actividades = data.map(fromRow);
+  actividades = todas.map(fromRow);
   dataLoaded = true;
   renderRoot();
 }
@@ -346,12 +354,20 @@ sb.channel("actividades-realtime")
   .subscribe();
 
 async function cargarTareas(){
-  const { data, error } = await sb.from("tareas").select("*").order("created_at", { ascending: true });
-  if(error){
-    console.error(error);
-    return;
+  let todas = [];
+  let desde = 0;
+  const TAMANO_PAGINA = 1000;
+  while(true){
+    const { data, error } = await sb.from("tareas").select("*").order("created_at", { ascending: true }).range(desde, desde + TAMANO_PAGINA - 1);
+    if(error){
+      console.error(error);
+      return;
+    }
+    todas = todas.concat(data);
+    if(data.length < TAMANO_PAGINA) break;
+    desde += TAMANO_PAGINA;
   }
-  tareas = data.map(fromTareaRow);
+  tareas = todas.map(fromTareaRow);
   tareasLoaded = true;
   renderRoot();
 }

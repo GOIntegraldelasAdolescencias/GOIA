@@ -17,7 +17,7 @@
   input,select,textarea{font-family:inherit;}
   ::-webkit-scrollbar{width:8px; height:8px;}
   ::-webkit-scrollbar-thumb{background:var(--line); border-radius:4px;}
-  #app{max-width:1400px; margin:0 auto; padding:20px;}
+  #app{max-width:1900px; width:100%; margin:0; padding:20px 28px;}
   .navbtn{width:32px; height:32px; border-radius:7px; border:1px solid var(--line); background:#fff; color:var(--ink); display:flex; align-items:center; justify-content:center; font-size:14px;}
   .chip{transition:transform .12s ease;}
   .chip:hover{transform:translateY(-1px);}
@@ -870,7 +870,7 @@ function renderMes(dias, today){
   const items = dias[detailDay] || [];
   return `
     <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
-      <div style="flex:1 1 560px; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; overflow:hidden;">
+      <div style="flex:3 1 700px; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; overflow:hidden;">
         <div style="display:grid; grid-template-columns:repeat(7,1fr); border-bottom:1px solid var(--line);">
           ${DIAS_SEMANA.map(d=>`<div class="mono" style="padding:8px 6px; font-size:11px; color:var(--ink-soft); text-align:center; text-transform:uppercase;">${d}</div>`).join("")}
         </div>
@@ -904,13 +904,15 @@ function renderMes(dias, today){
           }).join("")}
         </div>
       </div>
-      <div style="flex:1 1 260px; min-width:260px; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:14px;">
+      <div style="flex:2 1 480px; min-width:340px; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:14px;">
         <div class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">
           ${detailDay ? `${parseKey(detailDay).getDate()} de ${MESES[parseKey(detailDay).getMonth()]}` : "Seleccioná un día"}
         </div>
         ${(items.length===0 && tareas.filter(t=>t.fechaLimite===detailDay && t.estado!=="completada").length===0) ? `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">Sin actividades ni tareas registradas.</div>` : ""}
-        ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,false)).join("")}
-        ${tareas.filter(t=>t.fechaLimite===detailDay && t.estado!=="completada").map(t=>tareaCardHtml(t)).join("")}
+        <div style="column-count:2; column-gap:12px;">
+          ${agruparParaMostrar(items).map(miembros=>`<div style="break-inside:avoid;">${actividadCardHtmlGrupo(miembros,false)}</div>`).join("")}
+          ${tareas.filter(t=>t.fechaLimite===detailDay && t.estado!=="completada").map(t=>`<div style="break-inside:avoid;">${tareaCardHtml(t)}</div>`).join("")}
+        </div>
         <button class="navbtn" style="width:100%; padding:8px; font-size:13px; font-weight:600; margin-top:6px;" onclick="abrirNueva('${detailDay}')">+ Agregar actividad este día</button>
       </div>
     </div>

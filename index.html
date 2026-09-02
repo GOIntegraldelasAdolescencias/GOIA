@@ -30,6 +30,10 @@
     #app h1{ font-size:18px !important; }
     .navbtn{ font-size:11px !important; padding-left:8px !important; padding-right:8px !important; }
     .daycell{ height:52px !important; padding:3px !important; }
+    .dia-columnas{ column-count:1 !important; }
+  }
+  @media (max-width: 980px){
+    .dia-columnas{ column-count:2 !important; }
   }
   @media (max-width: 480px){
     .stack-mobile{ flex-direction:column !important; }
@@ -922,11 +926,26 @@ function renderMes(dias, today){
 function renderDia(dias){
   const items = (dias[dateKey(cursor)] || []).slice().sort((a,b)=>(a.horaInicio||"").localeCompare(b.horaInicio||""));
   const tareasDelDia = tareas.filter(t=>t.fechaLimite===dateKey(cursor) && t.estado!=="completada");
+  const grupos = agruparParaMostrar(items);
+  let horaAnterior = null;
+  const bloques = grupos.map(miembros=>{
+    const hora = (miembros[0].horaInicio||"").slice(0,5) || "Sin horario";
+    let encabezado = "";
+    if(hora !== horaAnterior){
+      horaAnterior = hora;
+      encabezado = `<div class="mono" style="break-inside:avoid; font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 4px 0;">${hora}</div>`;
+    }
+    return encabezado + `<div style="break-inside:avoid;">${actividadCardHtmlGrupo(miembros, false)}</div>`;
+  }).join("");
+
   return `
-    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:16px; max-width:640px;">
+    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:16px;">
       ${(items.length===0 && tareasDelDia.length===0) ? `<div style="font-size:14px; color:var(--ink-soft);">No hay actividades ni tareas registradas para este día.</div>` : ""}
-      ${agruparParaMostrar(items).map(miembros=>actividadCardHtmlGrupo(miembros,true)).join("")}
-      ${tareasDelDia.map(t=>tareaCardHtml(t)).join("")}
+      <div class="dia-columnas" style="column-count:3; column-gap:16px;">
+        ${bloques}
+        ${tareasDelDia.length>0 ? `<div class="mono" style="break-inside:avoid; font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 4px 0;">Tareas</div>` : ""}
+        ${tareasDelDia.map(t=>`<div style="break-inside:avoid;">${tareaCardHtml(t)}</div>`).join("")}
+      </div>
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
     </div>
   `;

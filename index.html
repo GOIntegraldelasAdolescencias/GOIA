@@ -117,6 +117,7 @@ const emptyForm = () => ({
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
   tipoRepeticion:"unica", diasSemana:[],
   fechasSueltasActivo:false, fechasSueltas:[],
+  aplicarATodoElGrupo:false,
 });
 function generarFechasSemanales(inicioStr, hastaStr, diasSemana){
   const inicio = parseKey(inicioStr);
@@ -463,6 +464,7 @@ function abrirEdicion(id){
   modalOpen = true; renderModal();
 }
 function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
+function toggleAplicarGrupo(checked){ form.aplicarATodoElGrupo = checked; renderModal(); }
 function quitarDireccion(i){
   form.direcciones.splice(i,1);
   if(form.direcciones.length===0) form.direcciones.push("");
@@ -532,9 +534,15 @@ async function guardarActividad(){
     return;
   }
 
-  // Edición de una actividad ya existente (una sola fila)
+  // Edición de una actividad ya existente (una sola fila, o todo el grupo si se pidió)
   const row = toRow(form);
-  const { error } = await sb.from("actividades").update(row).eq("id", form.id);
+  let error;
+  if(form.grupoId && form.aplicarATodoElGrupo){
+    const { fecha, programa_id, ...camposComunes } = row;
+    ({ error } = await sb.from("actividades").update(camposComunes).eq("grupo_id", form.grupoId));
+  } else {
+    ({ error } = await sb.from("actividades").update(row).eq("id", form.id));
+  }
   if(error){
     console.error(error);
     alert("No se pudo guardar. Revisá tu conexión o que tengas sesión iniciada.");
@@ -1416,6 +1424,16 @@ function formModalHtml(){
         <div style="margin-bottom:10px;"><label class="fieldLabel">Observaciones</label>
           <textarea class="inputStyle" rows="2" oninput="updateForm('observaciones', this.value)">${escapeHtml(form.observaciones)}</textarea>
         </div>
+
+        ${(form.id && form.grupoId) ? `
+        <div style="margin:14px 0; padding:12px; background:var(--accent-soft); border-radius:8px;">
+          <div style="display:flex; align-items:flex-start; gap:8px;">
+            <input type="checkbox" id="aplicar-grupo" style="margin-top:2px;" ${form.aplicarATodoElGrupo?"checked":""} onchange="toggleAplicarGrupo(this.checked)" />
+            <label for="aplicar-grupo" style="font-size:13px; font-weight:600; color:var(--accent);">Aplicar estos cambios a todas las fechas de esta actividad (${actividades.filter(a=>a.grupoId===form.grupoId).length} en total)</label>
+          </div>
+          <div style="font-size:11px; color:var(--ink-soft); margin-top:5px; margin-left:26px;">La fecha y el programa de cada copia no se tocan — se actualiza el resto (título, sede, horario, dirección, etc.) en todas a la vez.</div>
+        </div>
+        ` : ""}
 
         ${form.id ? `
         <div style="margin:14px 0; padding-top:14px; border-top:1px solid var(--line);">

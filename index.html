@@ -112,7 +112,7 @@ const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
   id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
-  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"",
+  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandas:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
   tipoRepeticion:"unica", diasSemana:[],
@@ -220,6 +220,8 @@ function toRow(f){
     hora_inicio: f.horaInicio || null,
     hora_fin: f.horaFin || null,
     personas: f.personas || null,
+    micros: f.micros !== "" && f.micros != null ? parseInt(f.micros, 10) : null,
+    viandas: f.viandas !== "" && f.viandas != null ? parseInt(f.viandas, 10) : null,
     tramite_estado: f.tramiteActivo ? f.tramiteEstado : null,
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
     observaciones: f.observaciones || null,
@@ -238,6 +240,8 @@ function fromRow(r){
     horaInicio: r.hora_inicio ? String(r.hora_inicio).slice(0,5) : "",
     horaFin: r.hora_fin ? String(r.hora_fin).slice(0,5) : "",
     personas: r.personas || "",
+    micros: (r.micros !== null && r.micros !== undefined) ? String(r.micros) : "",
+    viandas: (r.viandas !== null && r.viandas !== undefined) ? String(r.viandas) : "",
     tramiteEstado: r.tramite_estado || null,
     proximoPaso: r.proximo_paso || "",
     observaciones: r.observaciones || "",
@@ -281,6 +285,7 @@ let view = "mes";
 let cursor = new Date();
 let selectedDay = dateKey(new Date());
 let filtro = new Set(PROGRAMAS.map(p=>p.id));
+let busqueda = "";
 let filtroTipo = new Set(TIPOS_REPETICION.map(t=>t.id));
 let detailDay = dateKey(new Date());
 let form = emptyForm();
@@ -392,6 +397,22 @@ sb.channel("tareas-realtime")
 function setSeccion(s){ seccion = s; renderRoot(); }
 
 /* ===================== Acciones sobre actividades ===================== */
+function actualizarBusqueda(v){ busqueda = v; renderRoot(); }
+function limpiarBusqueda(){ busqueda = ""; renderRoot(); }
+function irABusquedaResultado(fecha){
+  cursor = parseKey(fecha);
+  detailDay = fecha; selectedDay = fecha;
+  view = "dia";
+  busqueda = "";
+  renderRoot();
+}
+function coincideBusqueda(a, texto){
+  if((a.titulo||"").toLowerCase().includes(texto)) return true;
+  if((a.organizacion||"").toLowerCase().includes(texto)) return true;
+  if((a.direcciones||[]).some(d=>(d||"").toLowerCase().includes(texto))) return true;
+  return false;
+}
+
 function toggleProgramaFiltro(id){ filtro.has(id)?filtro.delete(id):filtro.add(id); renderRoot(); }
 function setSoloUno(id){ filtro = new Set([id]); renderRoot(); }
 function setTodos(){ filtro = new Set(PROGRAMAS.map(p=>p.id)); renderRoot(); }
@@ -809,6 +830,15 @@ function renderAgenda(consolidado, dias, today){
     ${!dataLoaded ? `<div style="padding:14px; color:var(--ink-soft); font-size:13px;">Sincronizando con la base de datos…</div>` : ""}
 
     <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input class="inputStyle" placeholder="Buscar por taller, organización o dirección..." value="${escapeHtml(busqueda)}" oninput="actualizarBusqueda(this.value)" style="flex:1;" />
+        ${busqueda.trim() ? `<button onclick="limpiarBusqueda()" style="font-size:12px; font-weight:600; color:var(--ink-soft); border:1px solid var(--line); border-radius:6px; padding:9px 14px; white-space:nowrap;">✕ Limpiar</button>` : ""}
+      </div>
+    </div>
+
+    ${busqueda.trim() ? renderResultadosBusqueda(busqueda) : `
+
+    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
         <span class="mono" style="font-size:11px; letter-spacing:.08em; color:var(--ink-soft); text-transform:uppercase;">Programas</span>
         <button onclick="setTodos()" style="font-size:12px; font-weight:600; color:${consolidado?"var(--accent)":"var(--ink-soft)"}; background:${consolidado?"var(--accent-soft)":"transparent"}; border:1px solid ${consolidado?"var(--accent)":"var(--line)"}; border-radius:6px; padding:4px 10px;">Vista consolidada</button>
@@ -861,6 +891,7 @@ function renderAgenda(consolidado, dias, today){
     </div>
 
     <div id="view-body"></div>
+    `}
 
     ${(dataLoaded && actividades.length===0) ? `<div style="margin-top:16px; font-size:13px; color:var(--ink-soft);">Todavía no hay actividades cargadas. Usá "Nueva actividad" para empezar, o "Importar" si ya tenés un respaldo.</div>` : ""}
     <div style="margin-top:24px; font-size:11px; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:10px;">
@@ -947,6 +978,31 @@ function renderDia(dias){
         ${bloques}
       </div>
       <button class="navbtn" style="width:100%; padding:10px; font-size:13px; font-weight:600; margin-top:8px;" onclick="abrirNueva('${dateKey(cursor)}')">+ Agregar actividad</button>
+    </div>
+  `;
+}
+
+function renderResultadosBusqueda(q){
+  const texto = q.trim().toLowerCase();
+  const resultados = actividades
+    .filter(a => filtro.has(a.programaId) && coincideBusqueda(a, texto))
+    .sort((a,b)=> (a.fecha+(a.horaInicio||"")).localeCompare(b.fecha+(b.horaInicio||"")));
+  const CAP = 300;
+  const mostrar = resultados.slice(0, CAP);
+  return `
+    <div style="background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:16px;">
+      <div style="padding:10px 14px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft);">
+        ${resultados.length} resultado${resultados.length!==1?"s":""} para "${escapeHtml(q)}"${resultados.length>CAP?` (mostrando los primeros ${CAP})`:""}
+      </div>
+      ${mostrar.length===0 ? `<div style="padding:24px; text-align:center; font-size:13px; color:var(--ink-soft);">No se encontraron actividades.</div>` : mostrar.map(a=>{
+        const p = programaById(a.programaId);
+        return `<div onclick="irABusquedaResultado('${a.fecha}')" style="display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer;">
+          <span style="width:9px; height:9px; border-radius:50%; background:${p.color}; flex-shrink:0;" title="${p.nombre}"></span>
+          <span class="mono" style="font-size:11.5px; color:var(--ink-soft); width:110px; flex-shrink:0;">${a.fecha}${a.horaInicio?` · ${a.horaInicio}`:""}</span>
+          <span style="font-size:13px; font-weight:600; flex:1; min-width:140px;">${escapeHtml(a.titulo)}</span>
+          <span style="font-size:11.5px; color:var(--ink-soft);">${escapeHtml(a.organizacion||"")}</span>
+        </div>`;
+      }).join("")}
     </div>
   `;
 }
@@ -1078,6 +1134,7 @@ function actividadCardHtml(a, expanded){
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
       ${a.organizacion ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">🏢 ${escapeHtml(a.organizacion)}</div>` : ""}
       ${(a.personas && expanded) ? `<div style="font-size:11.5px; color:var(--ink-soft);">👤 ${escapeHtml(a.personas)}</div>` : ""}
+      ${(a.micros || a.viandas) ? `<div style="font-size:11.5px; color:var(--ink-soft);">${a.micros?`🚌 ${a.micros}`:""}${(a.micros && a.viandas)?" · ":""}${a.viandas?`🍱 ${a.viandas}`:""}</div>` : ""}
       ${estado ? `<div style="font-size:11px; margin-top:4px;">${estado.icon} ${estado.label}${a.proximoPaso?` — ${escapeHtml(a.proximoPaso)}`:""}</div>` : ""}
       ${(expanded && a.observaciones) ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px; font-style:italic;">${escapeHtml(a.observaciones)}</div>` : ""}
     </div>
@@ -1163,6 +1220,7 @@ function viewModalHtml(){
           <div class="mono">${form.fecha}${form.horaInicio?` · ${form.horaInicio}${form.horaFin?` a ${form.horaFin}`:""}`:""}</div>
           ${form.organizacion?`<div>🏢 ${escapeHtml(form.organizacion)}</div>`:""}
           ${form.personas?`<div>👤 ${escapeHtml(form.personas)}</div>`:""}
+          ${(form.micros || form.viandas) ? `<div>${form.micros?`🚌 ${form.micros}`:""}${(form.micros && form.viandas)?" · ":""}${form.viandas?`🍱 ${form.viandas}`:""}</div>` : ""}
           ${estado?`<div>${estado.icon} ${estado.label}${form.proximoPaso?` — ${escapeHtml(form.proximoPaso)}`:""}</div>`:""}
           ${form.observaciones?`<div style="font-style:italic;">${escapeHtml(form.observaciones)}</div>`:""}
         </div>
@@ -1206,6 +1264,22 @@ function formModalHtml(){
             }).join("")}
           </div>
           ${form.programaIds.length>1 ? `<div style="font-size:11px; color:var(--ink-soft); margin-top:5px;">Se va a crear una copia de esta actividad en cada programa elegido.</div>` : ""}
+        </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          ${(!form.id && form.esCampamento) ? `
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Desde *</label>
+            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hasta *</label>
+            <input type="date" class="inputStyle" value="${form.fechaHasta}" oninput="updateForm('fechaHasta', this.value)" /></div>
+          ` : (!form.id && form.fechasSueltasActivo) ? `` : `
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>
+            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
+          `}
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora inicio</label>
+            <input type="time" class="inputStyle" value="${form.horaInicio}" oninput="updateForm('horaInicio', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora fin</label>
+            <input type="time" class="inputStyle" value="${form.horaFin}" oninput="updateForm('horaFin', this.value)" /></div>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
@@ -1271,6 +1345,15 @@ function formModalHtml(){
             ${PROGRAMAS.map(p=>`<option value="${p.id}" ${form.programaId===p.id?"selected":""}>${p.nombre}</option>`).join("")}
           </select>
         </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>
+            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora inicio</label>
+            <input type="time" class="inputStyle" value="${form.horaInicio}" oninput="updateForm('horaInicio', this.value)" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora fin</label>
+            <input type="time" class="inputStyle" value="${form.horaFin}" oninput="updateForm('horaFin', this.value)" /></div>
+        </div>
         `}
 
         <div class="stack-mobile" style="display:flex; gap:10px;">
@@ -1303,24 +1386,15 @@ function formModalHtml(){
           <button type="button" onclick="agregarDireccion()" style="font-size:12px; font-weight:600; color:var(--accent);">+ Agregar otra dirección</button>
         </div>
 
-        <div class="stack-mobile" style="display:flex; gap:10px;">
-          ${(!form.id && form.esCampamento) ? `
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Desde *</label>
-            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hasta *</label>
-            <input type="date" class="inputStyle" value="${form.fechaHasta}" oninput="updateForm('fechaHasta', this.value)" /></div>
-          ` : (!form.id && form.fechasSueltasActivo) ? `` : `
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Fecha *</label>
-            <input type="date" class="inputStyle" value="${form.fecha}" oninput="updateForm('fecha', this.value)" /></div>
-          `}
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora inicio</label>
-            <input type="time" class="inputStyle" value="${form.horaInicio}" oninput="updateForm('horaInicio', this.value)" /></div>
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Hora fin</label>
-            <input type="time" class="inputStyle" value="${form.horaFin}" oninput="updateForm('horaFin', this.value)" /></div>
-        </div>
-
         <div style="margin-bottom:10px;"><label class="fieldLabel">Personas (responsable / referente)</label>
           <input class="inputStyle" value="${escapeHtml(form.personas)}" oninput="updateForm('personas', this.value)" />
+        </div>
+
+        <div class="stack-mobile" style="display:flex; gap:10px;">
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Micros (cantidad)</label>
+            <input type="number" min="0" class="inputStyle" value="${form.micros}" oninput="updateForm('micros', this.value)" placeholder="0" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Viandas (cantidad)</label>
+            <input type="number" min="0" class="inputStyle" value="${form.viandas}" oninput="updateForm('viandas', this.value)" placeholder="0" /></div>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">

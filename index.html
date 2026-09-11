@@ -113,7 +113,7 @@ const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
   id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
-  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandas:"", viandasTipo:"", refrigerios:"",
+  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandasLista:[{tipo:"",cantidad:""}], refrigerios:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
   tipoRepeticion:"unica", diasSemana:[],
@@ -223,8 +223,12 @@ function toRow(f){
     hora_fin: f.horaFin || null,
     personas: f.personas || null,
     micros: f.micros !== "" && f.micros != null ? parseInt(f.micros, 10) : null,
-    viandas: f.viandas !== "" && f.viandas != null ? parseInt(f.viandas, 10) : null,
-    viandas_tipo: f.viandasTipo || null,
+    viandas_detalle: (() => {
+      const lista = (f.viandasLista||[])
+        .filter(v => v.cantidad !== "" && v.cantidad != null && parseInt(v.cantidad,10) > 0)
+        .map(v => ({ tipo: v.tipo || "", cantidad: parseInt(v.cantidad,10) }));
+      return lista.length ? lista : null;
+    })(),
     refrigerios: f.refrigerios !== "" && f.refrigerios != null ? parseInt(f.refrigerios, 10) : null,
     tramite_estado: f.tramiteActivo ? f.tramiteEstado : null,
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
@@ -245,8 +249,9 @@ function fromRow(r){
     horaFin: r.hora_fin ? String(r.hora_fin).slice(0,5) : "",
     personas: r.personas || "",
     micros: (r.micros !== null && r.micros !== undefined) ? String(r.micros) : "",
-    viandas: (r.viandas !== null && r.viandas !== undefined) ? String(r.viandas) : "",
-    viandasTipo: r.viandas_tipo || "",
+    viandasLista: (r.viandas_detalle && Array.isArray(r.viandas_detalle) && r.viandas_detalle.length)
+      ? r.viandas_detalle.map(v=>({ tipo: v.tipo || "", cantidad: (v.cantidad!=null?String(v.cantidad):"") }))
+      : (r.viandas ? [{ tipo: r.viandas_tipo || "", cantidad: String(r.viandas) }] : [{ tipo:"", cantidad:"" }]),
     refrigerios: (r.refrigerios !== null && r.refrigerios !== undefined) ? String(r.refrigerios) : "",
     tramiteEstado: r.tramite_estado || null,
     proximoPaso: r.proximo_paso || "",
@@ -462,13 +467,24 @@ function abrirNueva(fechaKey){
 function abrirEdicion(id){
   const act = actividades.find(a=>a.id===id);
   if(!act) return;
-  form = {...emptyForm(), ...act, direcciones: (act.direcciones&&act.direcciones.length)?act.direcciones:[""], tramiteActivo: !!act.tramiteEstado};
+  form = {...emptyForm(), ...act,
+    direcciones: (act.direcciones&&act.direcciones.length)?act.direcciones:[""],
+    viandasLista: (act.viandasLista&&act.viandasLista.length)?act.viandasLista:[{tipo:"",cantidad:""}],
+    tramiteActivo: !!act.tramiteEstado};
   nuevaFechaCopia = "";
   modalKind = "actividad";
   modalMode = currentUser ? "form" : "view";
   modalOpen = true; renderModal();
 }
 function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
+function agregarVianda(){ form.viandasLista.push({tipo:"",cantidad:""}); renderModal(); }
+function quitarVianda(i){
+  form.viandasLista.splice(i,1);
+  if(form.viandasLista.length===0) form.viandasLista.push({tipo:"",cantidad:""});
+  renderModal();
+}
+function actualizarViandaTipo(i, value){ form.viandasLista[i].tipo = value; }
+function actualizarViandaCantidad(i, value){ form.viandasLista[i].cantidad = value; }
 function toggleAplicarGrupo(checked){ form.aplicarATodoElGrupo = checked; renderModal(); }
 function quitarDireccion(i){
   form.direcciones.splice(i,1);
@@ -1147,9 +1163,9 @@ function actividadCardHtml(a, expanded){
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
       ${a.organizacion ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">🏢 ${escapeHtml(a.organizacion)}</div>` : ""}
       ${(a.personas && expanded) ? `<div style="font-size:11.5px; color:var(--ink-soft);">👤 ${escapeHtml(a.personas)}</div>` : ""}
-      ${(a.micros || a.viandas || a.refrigerios) ? `<div style="font-size:11.5px; color:var(--ink-soft);">${[
+      ${(a.micros || (a.viandasLista&&a.viandasLista.some(v=>v.cantidad)) || a.refrigerios) ? `<div style="font-size:11.5px; color:var(--ink-soft);">${[
         a.micros?`🚌 Micros: ${a.micros}`:null,
-        a.viandas?`🍱 Viandas: ${a.viandas}${a.viandasTipo?` (${a.viandasTipo})`:""}`:null,
+        (a.viandasLista&&a.viandasLista.filter(v=>v.cantidad).length) ? `🍱 Viandas: ${a.viandasLista.filter(v=>v.cantidad).map(v=>`${v.cantidad}${v.tipo?` ${v.tipo}`:""}`).join(", ")}` : null,
         a.refrigerios?`🥪 Refrigerios: ${a.refrigerios}`:null,
       ].filter(Boolean).join(" · ")}</div>` : ""}
       ${estado ? `<div style="font-size:11px; margin-top:4px;">${estado.icon} ${estado.label}${a.proximoPaso?` — ${escapeHtml(a.proximoPaso)}`:""}</div>` : ""}
@@ -1237,9 +1253,9 @@ function viewModalHtml(){
           <div class="mono">${form.fecha}${form.horaInicio?` · ${form.horaInicio}${form.horaFin?` a ${form.horaFin}`:""}`:""}</div>
           ${form.organizacion?`<div>🏢 ${escapeHtml(form.organizacion)}</div>`:""}
           ${form.personas?`<div>👤 ${escapeHtml(form.personas)}</div>`:""}
-          ${(form.micros || form.viandas || form.refrigerios) ? `<div>${[
+          ${(form.micros || (form.viandasLista&&form.viandasLista.some(v=>v.cantidad)) || form.refrigerios) ? `<div>${[
             form.micros?`🚌 Micros: ${form.micros}`:null,
-            form.viandas?`🍱 Viandas: ${form.viandas}${form.viandasTipo?` (${form.viandasTipo})`:""}`:null,
+            (form.viandasLista&&form.viandasLista.filter(v=>v.cantidad).length) ? `🍱 Viandas: ${form.viandasLista.filter(v=>v.cantidad).map(v=>`${v.cantidad}${v.tipo?` ${v.tipo}`:""}`).join(", ")}` : null,
             form.refrigerios?`🥪 Refrigerios: ${form.refrigerios}`:null,
           ].filter(Boolean).join(" · ")}</div>` : ""}
           ${estado?`<div>${estado.icon} ${estado.label}${form.proximoPaso?` — ${escapeHtml(form.proximoPaso)}`:""}</div>`:""}
@@ -1414,16 +1430,23 @@ function formModalHtml(){
         <div class="stack-mobile" style="display:flex; gap:10px;">
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Micros (cantidad)</label>
             <input type="number" min="0" class="inputStyle" value="${form.micros}" oninput="updateForm('micros', this.value)" placeholder="0" /></div>
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Viandas (cantidad)</label>
-            <input type="number" min="0" class="inputStyle" value="${form.viandas}" oninput="updateForm('viandas', this.value)" placeholder="0" /></div>
-          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Tipo de vianda</label>
-            <select class="inputStyle" onchange="updateForm('viandasTipo', this.value)">
-              <option value="" ${form.viandasTipo===""?"selected":""}>—</option>
-              ${VIANDAS_TIPOS.map(v=>`<option value="${v}" ${form.viandasTipo===v?"selected":""}>${v}</option>`).join("")}
-            </select>
-          </div>
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Refrigerios (cantidad)</label>
             <input type="number" min="0" class="inputStyle" value="${form.refrigerios}" oninput="updateForm('refrigerios', this.value)" placeholder="0" /></div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label class="fieldLabel">Viandas</label>
+          ${form.viandasLista.map((v,i)=>`
+            <div class="stack-mobile" style="display:flex; gap:6px; margin-bottom:6px;">
+              <select class="inputStyle" style="flex:1;" onchange="actualizarViandaTipo(${i}, this.value)">
+                <option value="" ${v.tipo===""?"selected":""}>Tipo —</option>
+                ${VIANDAS_TIPOS.map(t=>`<option value="${t}" ${v.tipo===t?"selected":""}>${t}</option>`).join("")}
+              </select>
+              <input type="number" min="0" class="inputStyle" style="flex:1;" value="${v.cantidad}" oninput="actualizarViandaCantidad(${i}, this.value)" placeholder="Cantidad" />
+              ${form.viandasLista.length>1 ? `<button type="button" onclick="quitarVianda(${i})" style="width:32px; flex-shrink:0; color:#B3413A; border:1px solid var(--line); border-radius:7px;">✕</button>` : ""}
+            </div>
+          `).join("")}
+          <button type="button" onclick="agregarVianda()" style="font-size:12px; font-weight:600; color:var(--accent);">+ Agregar otro tipo de vianda</button>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">

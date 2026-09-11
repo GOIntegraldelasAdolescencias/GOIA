@@ -83,6 +83,7 @@ const ESTADOS_TRAMITE = [
 ];
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DIAS_SEMANA = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+const VIANDAS_TIPOS = ["Ejecutivas", "Festivas", "Comunes"];
 const TIPOS_REPETICION = [
   { id:"unica", label:"Evento único" },
   { id:"normal", label:"Jornada normal" },
@@ -112,7 +113,7 @@ const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
   id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
-  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandas:"",
+  fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandas:"", viandasTipo:"", refrigerios:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
   tipoRepeticion:"unica", diasSemana:[],
@@ -223,6 +224,8 @@ function toRow(f){
     personas: f.personas || null,
     micros: f.micros !== "" && f.micros != null ? parseInt(f.micros, 10) : null,
     viandas: f.viandas !== "" && f.viandas != null ? parseInt(f.viandas, 10) : null,
+    viandas_tipo: f.viandasTipo || null,
+    refrigerios: f.refrigerios !== "" && f.refrigerios != null ? parseInt(f.refrigerios, 10) : null,
     tramite_estado: f.tramiteActivo ? f.tramiteEstado : null,
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
     observaciones: f.observaciones || null,
@@ -243,6 +246,8 @@ function fromRow(r){
     personas: r.personas || "",
     micros: (r.micros !== null && r.micros !== undefined) ? String(r.micros) : "",
     viandas: (r.viandas !== null && r.viandas !== undefined) ? String(r.viandas) : "",
+    viandasTipo: r.viandas_tipo || "",
+    refrigerios: (r.refrigerios !== null && r.refrigerios !== undefined) ? String(r.refrigerios) : "",
     tramiteEstado: r.tramite_estado || null,
     proximoPaso: r.proximo_paso || "",
     observaciones: r.observaciones || "",
@@ -1142,7 +1147,11 @@ function actividadCardHtml(a, expanded){
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
       ${a.organizacion ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">🏢 ${escapeHtml(a.organizacion)}</div>` : ""}
       ${(a.personas && expanded) ? `<div style="font-size:11.5px; color:var(--ink-soft);">👤 ${escapeHtml(a.personas)}</div>` : ""}
-      ${(a.micros || a.viandas) ? `<div style="font-size:11.5px; color:var(--ink-soft);">${a.micros?`🚌 ${a.micros}`:""}${(a.micros && a.viandas)?" · ":""}${a.viandas?`🍱 ${a.viandas}`:""}</div>` : ""}
+      ${(a.micros || a.viandas || a.refrigerios) ? `<div style="font-size:11.5px; color:var(--ink-soft);">${[
+        a.micros?`🚌 Micros: ${a.micros}`:null,
+        a.viandas?`🍱 Viandas: ${a.viandas}${a.viandasTipo?` (${a.viandasTipo})`:""}`:null,
+        a.refrigerios?`🥪 Refrigerios: ${a.refrigerios}`:null,
+      ].filter(Boolean).join(" · ")}</div>` : ""}
       ${estado ? `<div style="font-size:11px; margin-top:4px;">${estado.icon} ${estado.label}${a.proximoPaso?` — ${escapeHtml(a.proximoPaso)}`:""}</div>` : ""}
       ${(expanded && a.observaciones) ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px; font-style:italic;">${escapeHtml(a.observaciones)}</div>` : ""}
     </div>
@@ -1228,7 +1237,11 @@ function viewModalHtml(){
           <div class="mono">${form.fecha}${form.horaInicio?` · ${form.horaInicio}${form.horaFin?` a ${form.horaFin}`:""}`:""}</div>
           ${form.organizacion?`<div>🏢 ${escapeHtml(form.organizacion)}</div>`:""}
           ${form.personas?`<div>👤 ${escapeHtml(form.personas)}</div>`:""}
-          ${(form.micros || form.viandas) ? `<div>${form.micros?`🚌 ${form.micros}`:""}${(form.micros && form.viandas)?" · ":""}${form.viandas?`🍱 ${form.viandas}`:""}</div>` : ""}
+          ${(form.micros || form.viandas || form.refrigerios) ? `<div>${[
+            form.micros?`🚌 Micros: ${form.micros}`:null,
+            form.viandas?`🍱 Viandas: ${form.viandas}${form.viandasTipo?` (${form.viandasTipo})`:""}`:null,
+            form.refrigerios?`🥪 Refrigerios: ${form.refrigerios}`:null,
+          ].filter(Boolean).join(" · ")}</div>` : ""}
           ${estado?`<div>${estado.icon} ${estado.label}${form.proximoPaso?` — ${escapeHtml(form.proximoPaso)}`:""}</div>`:""}
           ${form.observaciones?`<div style="font-style:italic;">${escapeHtml(form.observaciones)}</div>`:""}
         </div>
@@ -1403,6 +1416,14 @@ function formModalHtml(){
             <input type="number" min="0" class="inputStyle" value="${form.micros}" oninput="updateForm('micros', this.value)" placeholder="0" /></div>
           <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Viandas (cantidad)</label>
             <input type="number" min="0" class="inputStyle" value="${form.viandas}" oninput="updateForm('viandas', this.value)" placeholder="0" /></div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Tipo de vianda</label>
+            <select class="inputStyle" onchange="updateForm('viandasTipo', this.value)">
+              <option value="" ${form.viandasTipo===""?"selected":""}>—</option>
+              ${VIANDAS_TIPOS.map(v=>`<option value="${v}" ${form.viandasTipo===v?"selected":""}>${v}</option>`).join("")}
+            </select>
+          </div>
+          <div style="margin-bottom:10px; flex:1;"><label class="fieldLabel">Refrigerios (cantidad)</label>
+            <input type="number" min="0" class="inputStyle" value="${form.refrigerios}" oninput="updateForm('refrigerios', this.value)" placeholder="0" /></div>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">

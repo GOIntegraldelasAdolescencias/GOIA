@@ -308,7 +308,9 @@ let nuevaFechaCopia = "";
 let tareas = [];
 let tareasLoaded = false;
 let tareaForm = emptyTareaForm();
-let seccion = "agenda"; // "agenda" | "tareas"
+let seccion = "agenda"; // "agenda" | "tareas" | "mapa"
+let mapaSvgCache = null;
+let mapaCargando = false;
 
 /* ===================== Autenticación ===================== */
 sb.auth.onAuthStateChange((_event, session) => {
@@ -838,10 +840,11 @@ function render(){
     <div style="display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
       <button onclick="setSeccion('agenda')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='agenda'?"var(--ink)":"#fff"}; color:${seccion==='agenda'?"#fff":"var(--ink-soft)"};">Agenda</button>
       <button onclick="setSeccion('tareas')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='tareas'?"var(--ink)":"#fff"}; color:${seccion==='tareas'?"#fff":"var(--ink-soft)"};">Tareas de gerencia${tareas.filter(t=>t.estado!=="completada").length>0 ? ` (${tareas.filter(t=>t.estado!=="completada").length})` : ""}</button>
-      <button onclick="${seccion==='agenda' ? "abrirNueva(selectedDay)" : "abrirNuevaTarea()"}" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600;">${seccion==='agenda' ? "+ Nueva actividad" : "+ Nueva tarea"}</button>
+      <button onclick="setSeccion('mapa')" style="padding:7px 16px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid var(--line); background:${seccion==='mapa'?"var(--ink)":"#fff"}; color:${seccion==='mapa'?"#fff":"var(--ink-soft)"};">Mapa GOPIA</button>
+      ${seccion !== "mapa" ? `<button onclick="${seccion==='agenda' ? "abrirNueva(selectedDay)" : "abrirNuevaTarea()"}" style="display:flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600;">${seccion==='agenda' ? "+ Nueva actividad" : "+ Nueva tarea"}</button>` : ""}
     </div>
 
-    ${seccion === "tareas" ? renderTareas() : renderAgenda(consolidado, dias, today)}
+    ${seccion === "tareas" ? renderTareas() : seccion === "mapa" ? renderMapa() : renderAgenda(consolidado, dias, today)}
   `;
 
   if(seccion === "agenda"){
@@ -1034,6 +1037,66 @@ function renderResultadosBusqueda(q){
       }).join("")}
     </div>
   `;
+}
+
+/* ===================== Mapa GOPIA (mermaid) ===================== */
+const MAPA_GOPIA_MERMAID = 'flowchart TD\n  classDef programa fill:#E1F5EE,stroke:#0F6E56,color:#04342C\n  classDef gerencia fill:#EEEDFE,stroke:#534AB7,color:#26215C\n  classDef legal fill:#FAECE7,stroke:#993C1D,color:#4A1B0C\n  classDef direccion fill:#FAEEDA,stroke:#854F0B,color:#412402\n  classDef externo fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A\n\n  subgraph FAM1["Organizaciones y convenios"]\n    A1["Organización presenta<br/>proyecto institucional"]:::externo\n    A2["Dirección General<br/>gestiona el convenio"]:::direccion\n    A3["Convenio firmado<br/>por el Ministro"]:::externo\n    A4["Gerencia Operativa<br/>sube convenio a carpeta"]:::gerencia\n    A5["Acceso VPN habilitado"]:::gerencia\n    A1 --> A2 --> A3 --> A4 --> A5\n  end\n\n  subgraph FAM2["Talleres en funcionamiento (Programa Adolescencias)"]\n    B1["Tallerista / operador social"]:::externo\n    B2["Supervisor<br/>informe mensual"]:::externo\n    B3["Coordinador de supervisores<br/>~5 a cargo"]:::externo\n    B4["Coordinadora del Programa<br/>\'Pata\'"]:::gerencia\n    B5["Organización cobra mensualidad<br/>por talleres y vacantes"]:::externo\n    B6["Organización paga<br/>a sus talleristas"]:::externo\n    B1 --> B2 --> B3 --> B4\n    A5 --> B5 --> B6\n  end\n\n  subgraph FAM3["Calendarización y logística de actividades"]\n    C1["Programa calendariza<br/>el mes"]:::programa\n    C2["Actividad con salida"]:::programa\n    C3["Brief del evento"]:::programa\n    C4["Contratación de micro<br/>Guadalupe"]:::gerencia\n    C5["Solicitud de comida<br/>Guadalupe"]:::gerencia\n    C6["Solicitud enviada<br/>destino final sin documentar"]:::externo\n    C1 --> C2 --> C3\n    C3 --> C4 --> C6\n    C3 --> C5 --> C6\n  end\n\n  subgraph FAM4["Ingreso excepcional y becas"]\n    D1["Expediente SADE"]:::externo\n    D2["Coordinadora del Programa"]:::gerencia\n    D3["Gerencia Operativa Legal<br/>firma eleve"]:::legal\n    D4["Adolescente elegible<br/>para beca"]:::programa\n    D5["Pago procesado<br/>\'Pablo\'"]:::gerencia\n    D1 --> D2 --> D3\n    D4 --> D5\n  end\n\n  subgraph FAM5["Seguimiento, control y derivaciones"]\n    E1["Vulneración de derechos<br/>detectada"]:::programa\n    E2["Mesa de Entradas DGPINA<br/>carátula expediente"]:::direccion\n    E3["Usuario PALOMASBESADA"]:::direccion\n    E4["Gerencia Operativa Legal<br/>eleva informe"]:::legal\n    E5["Dirección General"]:::direccion\n    E6["DGPDES / Consejo<br/>de Derechos"]:::externo\n    E7["Oficio o pedido 104<br/>recibido"]:::direccion\n    E8["Programa arma<br/>la información"]:::programa\n    E9["Paloma Besada revisa<br/>y Mesa de Entradas envía"]:::legal\n    E10["Auditoría de asistencia<br/>cargada"]:::gerencia\n    E11["Tablero mensual<br/>de pedidos"]:::gerencia\n    E1 --> E2 --> E3 --> E4 --> E5 --> E6\n    E7 --> E8 --> E9\n  end\n\n  A5 -.habilita.-> C1\n  B4 -.reporta a.-> E10\n  C6 -.se totaliza en.-> E11\n  E10 -.retroalimenta.-> A1\n';
+
+function renderMapa(){
+  if(!mapaSvgCache && !mapaCargando){
+    mapaCargando = true;
+    cargarMapaMermaid();
+  }
+  return `
+    <div>
+      <p style="font-size:12.5px; color:var(--ink-soft); max-width:640px; margin:0 0 12px;">
+        Flujo de funcionamiento administrativo de la Gerencia: organizaciones y convenios, talleres en funcionamiento, calendarización y logística, ingreso y becas, seguimiento y derivaciones.
+      </p>
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoom(1.2)">Acercar +</button>
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoom(0.8)">Alejar -</button>
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoomReset()">Restablecer</button>
+      </div>
+      <div id="mapa-canvas" style="border:1px solid var(--line); border-radius:10px; background:#fff; overflow:auto; padding:16px; max-height:70vh;">
+        <div id="mapa-graph" style="transform-origin: top left;">
+          ${mapaSvgCache ? mapaSvgCache : `<div style="font-size:13px; color:var(--ink-soft); padding:20px;">Cargando mapa…</div>`}
+        </div>
+      </div>
+      <div style="display:flex; gap:14px; flex-wrap:wrap; margin:12px 0 0; font-size:11.5px; color:var(--ink-soft);">
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#0F6E56;"></span>Programa (equipo de campo)</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#534AB7;"></span>Gerencia Operativa</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#993C1D;"></span>Gerencia Operativa Legal</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#854F0B;"></span>Dirección General</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#5F5E5A;"></span>Actor externo</span>
+      </div>
+    </div>
+  `;
+}
+
+async function cargarMapaMermaid(){
+  try{
+    const { default: mermaid } = await import('https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs');
+    mermaid.initialize({ startOnLoad:false, theme:'base', securityLevel:'loose',
+      themeVariables:{ fontFamily:'Inter, sans-serif', fontSize:'13px', lineColor:'#8A8878', primaryColor:'#F1EFE8', primaryBorderColor:'#5F5E5A', primaryTextColor:'#22262B' } });
+    const { svg } = await mermaid.render('gopia-map-svg', MAPA_GOPIA_MERMAID);
+    mapaSvgCache = svg;
+  }catch(e){
+    mapaSvgCache = `<div style="font-size:13px; color:var(--ink-soft); padding:20px;">No se pudo cargar el mapa: ${e.message}</div>`;
+  }
+  mapaCargando = false;
+  renderRoot();
+}
+
+let mapaZoomScale = 1;
+function mapaZoom(factor){
+  mapaZoomScale = Math.min(Math.max(mapaZoomScale * factor, 0.4), 3);
+  const g = document.getElementById("mapa-graph");
+  if(g) g.style.transform = "scale(" + mapaZoomScale + ")";
+}
+function mapaZoomReset(){
+  mapaZoomScale = 1;
+  const g = document.getElementById("mapa-graph");
+  if(g) g.style.transform = "scale(1)";
 }
 
 function renderTareas(){

@@ -9,6 +9,7 @@
   :root{
     --ink:#22262B; --ink-soft:#5B6470; --paper:#F6F6F3; --paper-raised:#FFFFFF;
     --line:#DEDCD3; --accent:#2D5F5A; --accent-soft:#E4EEEC;
+    --warn:#8A5A00; --warn-soft:#FBF0DC;
   }
   *{box-sizing:border-box;}
   body{margin:0; font-family:'Inter',system-ui,sans-serif; background:var(--paper); color:var(--ink);}
@@ -39,6 +40,45 @@
     .stack-mobile{ flex-direction:column !important; }
     #modal-container > div > div{ padding:16px !important; }
   }
+
+  /* ---- Mapa GOPIA ---- */
+  .breadcrumb{display:flex; gap:6px; align-items:center; font-size:12px; color:var(--ink-soft); margin-bottom:16px; flex-wrap:wrap;}
+  .breadcrumb button{font-family:inherit; font-size:12px; color:var(--accent); background:none; border:none; cursor:pointer; font-weight:600; padding:0;}
+  .breadcrumb span{color:var(--line);}
+  .grid-mapa{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  @media (max-width:560px){ .grid-mapa{grid-template-columns:1fr;} }
+  .card{background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:left; cursor:pointer; font-family:inherit; width:100%;}
+  .card:hover{border-color:var(--accent);}
+  .card-title{font-size:14px; font-weight:700; margin:0 0 4px;}
+  .card-sub{font-size:12px; color:var(--ink-soft); margin:0;}
+  .root-card{background:var(--accent); color:#fff; border:none; border-radius:12px; padding:20px; margin-bottom:14px; cursor:pointer; text-align:left; width:100%;}
+  .root-card .card-title{color:#fff; font-size:17px;}
+  .root-card .card-sub{color:#DCEBE8;}
+  .report-btn{display:flex; align-items:center; gap:8px; background:#fff; border:1.5px solid var(--accent); color:var(--accent); border-radius:10px; padding:12px 16px; cursor:pointer; font-family:inherit; font-size:13px; font-weight:700; width:100%; margin-bottom:18px;}
+  .report-btn:hover{background:var(--accent-soft);}
+  .section-label{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin:20px 0 8px;}
+  .brief{font-size:13.5px; line-height:1.55; margin:0 0 12px; color:var(--ink);}
+  .gestion-box{background:var(--accent-soft); border-radius:8px; padding:10px 12px; font-size:12.5px; color:var(--accent); line-height:1.5; margin-bottom:16px;}
+  .gestion-box b{display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;}
+  .icon-row{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;}
+  .icon-chip{display:inline-flex; align-items:center; gap:5px; background:#fff; border:1px solid var(--line); border-radius:20px; padding:6px 12px; font-size:12px; font-weight:600; color:var(--ink); cursor:pointer; font-family:inherit;}
+  .icon-chip:hover{border-color:var(--accent); color:var(--accent);}
+  .icon-chip.open{background:var(--accent); border-color:var(--accent); color:#fff;}
+  .gestion-detail{font-size:12.5px; color:var(--ink-soft); line-height:1.5; background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:-2px 0 10px;}
+  .list-item{background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:8px; cursor:pointer;}
+  .list-item:hover{border-color:var(--accent);}
+  .list-item .nombre{font-size:13.5px; font-weight:700; margin:0 0 3px;}
+  .list-item .meta{font-size:11.5px; color:var(--ink-soft);}
+  .badge{font-size:10px; font-weight:700; padding:2px 7px; border-radius:5px; text-transform:uppercase;}
+  .badge-ok{background:var(--accent-soft); color:var(--accent);}
+  .badge-falta{background:#FAE7E7; color:#8A2E2E;}
+  .team-item{display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:10px 0; border-bottom:1px solid var(--line);}
+  .team-item:last-child{border-bottom:none;}
+  .team-name{font-size:13.5px; font-weight:700; margin:0;}
+  .team-role{font-size:11px; color:var(--accent); font-weight:600; margin:1px 0 3px;}
+  .team-resp{font-size:12.5px; color:var(--ink-soft); margin:0; max-width:420px;}
+  .status{font-size:12px; color:var(--ink-soft); margin:10px 0;}
+  .falta{font-size:11.5px; color:#8A2E2E; font-style:italic;}
 </style>
 </head>
 <body>
@@ -288,6 +328,9 @@ function fromTareaRow(r){
 
 /* ===================== Estado ===================== */
 let currentUser = null;
+let modoEditor = false; // arranca siempre en modo vista, aunque haya sesión iniciada
+function puedeEditar(){ return !!currentUser && modoEditor; }
+function toggleModoEditor(){ modoEditor = !modoEditor; renderRoot(); }
 let loginError = "";
 
 let actividades = [];
@@ -309,8 +352,6 @@ let tareas = [];
 let tareasLoaded = false;
 let tareaForm = emptyTareaForm();
 let seccion = "agenda"; // "agenda" | "tareas" | "mapa"
-let mapaSvgCache = null;
-let mapaCargando = false;
 
 /* ===================== Autenticación ===================== */
 sb.auth.onAuthStateChange((_event, session) => {
@@ -463,6 +504,7 @@ function setDetailDay(key){ detailDay = key; renderRoot(); }
 
 function abrirNueva(fechaKey){
   if(!currentUser){ abrirLogin(); return; }
+  if(!modoEditor){ alert("Activá el modo editor (arriba a la derecha) para agregar o editar."); return; }
   form = {...emptyForm(), fecha: fechaKey || dateKey(cursor)};
   modalKind = "actividad"; modalMode = "form"; modalOpen = true; renderModal();
 }
@@ -475,7 +517,7 @@ function abrirEdicion(id){
     tramiteActivo: !!act.tramiteEstado};
   nuevaFechaCopia = "";
   modalKind = "actividad";
-  modalMode = currentUser ? "form" : "view";
+  modalMode = puedeEditar() ? "form" : "view";
   modalOpen = true; renderModal();
 }
 function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
@@ -620,6 +662,7 @@ async function eliminarActividad(id){
 }
 function abrirNuevaTarea(){
   if(!currentUser){ abrirLogin(); return; }
+  if(!modoEditor){ alert("Activá el modo editor (arriba a la derecha) para agregar o editar."); return; }
   tareaForm = emptyTareaForm();
   modalKind = "tarea"; modalMode = "form"; modalOpen = true; renderModal();
 }
@@ -628,7 +671,7 @@ function abrirEdicionTarea(id){
   if(!t) return;
   tareaForm = {...t};
   modalKind = "tarea";
-  modalMode = currentUser ? "form" : "view";
+  modalMode = puedeEditar() ? "form" : "view";
   modalOpen = true; renderModal();
 }
 function updateTareaForm(field, value){ tareaForm[field] = value; }
@@ -674,6 +717,7 @@ function exportData(){
 }
 async function importData(input){
   if(!currentUser){ input.value = ""; abrirLogin(); return; }
+  if(!modoEditor){ input.value = ""; alert("Activá el modo editor (arriba a la derecha) para importar."); return; }
   const file = input.files[0];
   if(!file) return;
   const reader = new FileReader();
@@ -825,6 +869,7 @@ function render(){
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         ${currentUser ? `
           <span style="font-size:12px; color:var(--ink-soft);">${escapeHtml(currentUser.email||"")}</span>
+          <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; ${modoEditor?'background:var(--accent); color:#fff; border-color:var(--accent);':''}" onclick="toggleModoEditor()">${modoEditor ? "✎ Modo editor" : "👁 Modo vista"}</button>
           <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="logout()">Salir</button>
         ` : `
           <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="abrirLogin()">Iniciar sesión</button>
@@ -1039,64 +1084,229 @@ function renderResultadosBusqueda(q){
   `;
 }
 
-/* ===================== Mapa GOPIA (mermaid) ===================== */
-const MAPA_GOPIA_MERMAID = 'flowchart TD\n  classDef programa fill:#E1F5EE,stroke:#0F6E56,color:#04342C\n  classDef gerencia fill:#EEEDFE,stroke:#534AB7,color:#26215C\n  classDef legal fill:#FAECE7,stroke:#993C1D,color:#4A1B0C\n  classDef direccion fill:#FAEEDA,stroke:#854F0B,color:#412402\n  classDef externo fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A\n\n  subgraph FAM1["Organizaciones y convenios"]\n    A1["Organización presenta<br/>proyecto institucional"]:::externo\n    A2["Dirección General<br/>gestiona el convenio"]:::direccion\n    A3["Convenio firmado<br/>por el Ministro"]:::externo\n    A4["Gerencia Operativa<br/>sube convenio a carpeta"]:::gerencia\n    A5["Acceso VPN habilitado"]:::gerencia\n    A1 --> A2 --> A3 --> A4 --> A5\n  end\n\n  subgraph FAM2["Talleres en funcionamiento (Programa Adolescencias)"]\n    B1["Tallerista / operador social"]:::externo\n    B2["Supervisor<br/>informe mensual"]:::externo\n    B3["Coordinador de supervisores<br/>~5 a cargo"]:::externo\n    B4["Coordinadora del Programa<br/>\'Pata\'"]:::gerencia\n    B5["Organización cobra mensualidad<br/>por talleres y vacantes"]:::externo\n    B6["Organización paga<br/>a sus talleristas"]:::externo\n    B1 --> B2 --> B3 --> B4\n    A5 --> B5 --> B6\n  end\n\n  subgraph FAM3["Calendarización y logística de actividades"]\n    C1["Programa calendariza<br/>el mes"]:::programa\n    C2["Actividad con salida"]:::programa\n    C3["Brief del evento"]:::programa\n    C4["Contratación de micro<br/>Guadalupe"]:::gerencia\n    C5["Solicitud de comida<br/>Guadalupe"]:::gerencia\n    C6["Solicitud enviada<br/>destino final sin documentar"]:::externo\n    C1 --> C2 --> C3\n    C3 --> C4 --> C6\n    C3 --> C5 --> C6\n  end\n\n  subgraph FAM4["Ingreso excepcional y becas"]\n    D1["Expediente SADE"]:::externo\n    D2["Coordinadora del Programa"]:::gerencia\n    D3["Gerencia Operativa Legal<br/>firma eleve"]:::legal\n    D4["Adolescente elegible<br/>para beca"]:::programa\n    D5["Pago procesado<br/>\'Pablo\'"]:::gerencia\n    D1 --> D2 --> D3\n    D4 --> D5\n  end\n\n  subgraph FAM5["Seguimiento, control y derivaciones"]\n    E1["Vulneración de derechos<br/>detectada"]:::programa\n    E2["Mesa de Entradas DGPINA<br/>carátula expediente"]:::direccion\n    E3["Usuario PALOMASBESADA"]:::direccion\n    E4["Gerencia Operativa Legal<br/>eleva informe"]:::legal\n    E5["Dirección General"]:::direccion\n    E6["DGPDES / Consejo<br/>de Derechos"]:::externo\n    E7["Oficio o pedido 104<br/>recibido"]:::direccion\n    E8["Programa arma<br/>la información"]:::programa\n    E9["Paloma Besada revisa<br/>y Mesa de Entradas envía"]:::legal\n    E10["Auditoría de asistencia<br/>cargada"]:::gerencia\n    E11["Tablero mensual<br/>de pedidos"]:::gerencia\n    E1 --> E2 --> E3 --> E4 --> E5 --> E6\n    E7 --> E8 --> E9\n  end\n\n  A5 -.habilita.-> C1\n  B4 -.reporta a.-> E10\n  C6 -.se totaliza en.-> E11\n  E10 -.retroalimenta.-> A1\n';
+/* ===================== Mapa GOPIA (navegador) ===================== */
+const MAPA_TEAM = [{"nombre": "Paula Seminare", "rol": "Gerenta Operativa", "resp": "Conduce la Gerencia Operativa GOPIA."}, {"nombre": "Danilo Dignani", "rol": "Abogado", "resp": "Responsabilidad específica todavía no detallada."}, {"nombre": "Santiago Sandoná", "rol": "Asistente administrativo", "resp": "Responsabilidad específica todavía no detallada."}, {"nombre": "Adriana", "rol": "RAP", "resp": "Todo lo referido a personal."}, {"nombre": "Guadalupe", "rol": "—", "resp": "Seguimiento de la contratación de micros y de insumos para meriendas de los programas."}, {"nombre": "Ana Prado Morello", "rol": "Asistente administrativa", "resp": "Gestión administrativa general — usuaria de este mapa."}];
+const MAPA_PROGRAMAS = {"adolescencias": {"nombre": "Programa Adolescencias", "brief": "El Programa Adolescencia es una iniciativa pensada para estimular las potencialidades y la capacidad creadora de los adolescentes a través de la expresión artística, del acceso a las nuevas tecnologías de información y comunicación como herramienta de integración social, y de la práctica de actividades físicas y deportivas orientadas al desarrollo de la personalidad, el trabajo en equipo y el cuidado de la salud.<br/><br/>Está destinado a adolescentes entre 13 y 18 años que integran hogares en situación de vulnerabilidad social en la Ciudad de Buenos Aires. Se desarrolla a partir de dos ejes fundamentales: los talleres culturales, deportivos y de ciencia y tecnología, y el acompañamiento profesional de los y las adolescentes.", "tiene_organizaciones": true, "gestion": "El convenio con cada organización lo gestiona la Dirección General (no la Gerencia). Dentro de cada organización, el tallerista responde a un Supervisor, que reporta al Coordinador de Supervisores, que responde a la Coordinadora del Programa (\"Pata\"). La organización cobra una mensualidad proporcional a talleres y vacantes — no al presentismo — y con eso paga a sus talleristas.", "diagnostico": "Cierre 2026 (Presentación Desafío 2027): 11.600 adolescentes inscriptos, 7.000 cupos disponibles, 4.600 de demanda no cubierta (39,7%). Hitos: cierre de clínicas UNTREF el 10 de octubre (500–700 adolescentes; taekwondo, vóley, fútbol, IA) y cierre del Programa el 7 de noviembre (14/11 fecha alternativa por suspensión). Desafío 2027: ampliar la capacidad del Programa y fortalecer la participación sostenida.", "coordinador": "Patricia González Chans"}, "lazos": {"nombre": "Reconstruyendo Lazos", "brief": "Brinda herramientas que el mundo del trabajo requiere, por medio de prácticas socioeducativas laborales y distintas instancias de capacitación, para incrementar las condiciones de empleabilidad de adolescentes y jóvenes. Promueve la inserción laboral en situación de vulnerabilidad social, mediante capacitaciones y prácticas en espacios de trabajo.<br/><br/>Como marca distintiva, cuenta con un dispositivo de acompañamiento que orienta la experiencia de quienes participan. Destinatarios: adolescentes y jóvenes entre 16 y 21 años en situación de vulnerabilidad social de la Ciudad de Buenos Aires.", "tiene_organizaciones": true, "gestion": "Cada espacio de práctica es un tercero (empresa, organismo, espacio cultural) que recibe jóvenes en práctica laboral. El circuito de alta institucional propio de este programa todavía no está confirmado.", "coordinador": "Anabella Divan"}, "lideres": {"nombre": "Líderes Recreativos y Comunitarios", "brief": "Propuesta gratuita de inclusión y capacitación dirigida a adolescentes entre 16 y 18 años de la Ciudad de Buenos Aires, con el objetivo de generar espacios de formación en recreación y liderazgo comunitario que promuevan procesos de participación y autogestión en sus barrios e instituciones. Se desarrolla desde 1998.<br/><br/>El curso tiene una duración de tres años y a lo largo del trayecto se comparten salidas, campamentos y viajes. Es dictado por un equipo docente formado por profesionales de diversas áreas con una larga trayectoria en la coordinación de grupos.", "tiene_organizaciones": false, "gestion": "Funciona en sede fija propia (Escuela García Lorca, los sábados) y hace salidas esporádicas a otros lugares todavía sin detallar.", "diagnostico": "Diagnóstico 2026 (Presentación Desafío 2027, ahí nombrado \"Recreación Comunitaria\"): 250 adolescentes y jóvenes entre 1er año, 2do año, 3er año y ERA. La falta de presupuesto obligó a readaptar actividades centrales del trayecto formativo y a suspender otras (campamento con Programa Juegotecas, evento Conexión sin WiFi, salida al Delta del Tigre, todas suspendidas por falta de presupuesto; gira a Mar del Plata/Mar Chiquita y viaje al Tríptico de la Infancia en Rosario, en proceso de readaptación por lo mismo). Los campamentos de 1er, 2do año y ERA se realizaron o readaptaron en la Escuela García Lorca. Para 2027 se trabaja una Diplomatura con la UNTREF (\"Promotor Integral en Recreación Comunitaria\"), certificada al finalizar el tercer año.", "coordinador": "Romina Valsecchi"}, "coopa": {"nombre": "COOPA", "brief": "La institución trabaja con adolescentes de 14 a 21 años capacitándolos en distintos oficios (mecánica, herrería, electricidad, computación, diseño gráfico) y desarrollando también actividades recreativas, deportivas y espacios de trabajo en formación laboral, en derechos humanos y en lectura y escritura.<br/><br/><b>Objetivos generales:</b> propiciar un espacio de formación integral para el trabajo donde la formación técnica de los oficios sea a su vez disparador hacia otros conocimientos de disciplinas básicas y de desarrollo de saberes aptitudinales y actitudinales para el desenvolvimiento en el mundo del trabajo. Promover el conocimiento y ejercicio de los derechos humanos y sociales de las/os jóvenes, apuntando a fortalecer su protagonismo, toma de decisiones y reflexión-acción sobre su realidad, en la perspectiva de sujetos de derecho hacia la ciudadanía plena.<br/><br/><b>Enfoque pedagógico-didáctico:</b> la enseñanza tiene como punto de partida la realidad propia, la experiencia y su relación con la teoría y la práctica, combinando el trabajo colectivo con la articulación por áreas. La modalidad de taller/salón permite que circule de manera horizontal y democrática la palabra, construyendo el pensamiento crítico y la identidad de pertenencia.", "tiene_organizaciones": false, "gestion": "Funciona en centros propios del programa, no en organizaciones externas. Uno de esos centros (Barrio Rivadavia I) es además el que usa TABF prestado.", "coordinador": "Daniel Quiroz"}, "bajoflores": {"nombre": "TABF — Talleres Adolescentes del Bajo Flores", "brief": "El Programa Talleres para Adolescentes del Bajo Flores se constituye como una articulación de organizaciones sociales y comunitarias de la zona con el Estado, con el fin de promover espacios educativos con los y las adolescentes.", "tiene_organizaciones": true, "gestion": "No tiene sede propia: usa las instalaciones que le prestan 11 instituciones de la red (comedores, capillas, radio comunitaria, biblioteca, club, escuela y una sede de COOPA).", "coordinador": "Lorena Fernández"}, "turismo": {"nombre": "Turismo Social", "brief": "Sin reseña oficial disponible todavía. Actualmente con poca actividad, según lo indicado.", "tiene_organizaciones": false, "gestion": "Tiene sede propia (Parque Sarmiento, según la nómina de personal), todavía no incorporada a la base a la espera de confirmación.", "coordinador": null}};
+const MAPA_GESTIONES_PROGRAMA = {"adolescencias": [{"titulo": "Supervisión de talleres", "desc": "El tallerista responde a un Supervisor, que arma un informe mensual por institución y se lo pasa al Coordinador de Supervisores (a cargo de ~5 supervisores), quien responde a la Coordinadora del Programa, Patricia González Chans (\"Pata\")."}, {"titulo": "Pago mensual a organizaciones", "desc": "La organización cobra una mensualidad proporcional a la cantidad de talleres y de vacantes — no al presentismo real — para garantizar que los talleristas puedan cobrar. Con ese dinero, la organización les paga."}, {"titulo": "Convenio con UNTREF — clínicas deportivas", "desc": "Consentimiento informado a padres, cronograma, brief por clínica/institución, ejecución, síntesis de participación y cierre."}, {"titulo": "Alianzas estratégicas 2027", "desc": "Red de empresas y organismos aliados: tecnología e IA (Globant, Mercado Libre), empleabilidad y educación financiera (Banco Ciudad, Coca-Cola, Mercado Libre), deporte y vida saludable (River, San Lorenzo, Racing, Argentinos Juniors, UNTREF, UBA, Arcor), nuevas experiencias (teatros, radios, universidades, Secretaría de Cultura). Desafío 2027: pasar de alianzas institucionales a experiencias y oportunidades concretas."}, {"titulo": "Pago de becas", "desc": "Las adolescencias cobran este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno.<br/><br/>La beca no funciona como un salario ni como un subsidio discrecional, sino como una herramienta de política pública para asegurar que los jóvenes en situación de vulnerabilidad social puedan costear los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo — Programa Adolescencias</b><br/><br/>La inscripción es abierta, libre y gratuita, a través del sistema del Gobierno de la Ciudad.<br/><br/>Una vez cargadas todas las inscripciones, se realiza un proceso de selección que prioriza a las adolescencias con mayor situación de marginalidad y problemática social a la hora de asignar vacante. El programa cuenta con aproximadamente 7.000 vacantes.<br/><br/>Las y los seleccionados se registran en el <b>RIB</b> (sistema interno del Gobierno de la Ciudad), donde el personal administrativo carga los datos de identificación y contacto del adolescente (CUIT, dirección, teléfono, nombre completo, DNI, CUIL) y, cuando corresponde, los mismos datos de su representante.<br/><br/>Los y las adolescentes mayores de 13 años pueden cobrar la beca ellos mismos, mediante un CBU del Banco Ciudad, o a través de un representante legal (tutor/a). Los y las menores de 13 años requieren representante.<br/><br/>Con la información cargada en el RIB, la carga del pago en sí se realiza en el <b>PSOC</b>, otro sistema interno del Gobierno de la Ciudad. Ambos sistemas (RIB y PSOC) dan aviso a Tesorería, que habilita la acreditación del pago."}], "lazos": [{"titulo": "Pago de becas", "desc": "Las adolescencias cobran este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno.<br/><br/>La beca no funciona como un salario ni como un subsidio discrecional, sino como una herramienta de política pública para asegurar que los jóvenes en situación de vulnerabilidad social puedan costear los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo:</b> Un/a adolescente elegible genera expediente, se cruza contra su cuenta bancaria, cambia de estado (elegibilidad, operativa, baja solicitada) y se procesa el pago mensual."}], "lideres": [{"titulo": "Insumos para campamentos", "desc": "Por cada campamento programado: pedido de insumos, compra, depósito y entrega."}, {"titulo": "Alianza con Radio Mitre", "desc": "A partir del taller de radio del programa, los y las jóvenes participan de la organización y producción de la propuesta \"Voces que Inspiran\", en articulación con Radio Mitre."}], "coopa": [], "bajoflores": [], "turismo": []};
+const MAPA_GESTIONES_GENERALES = [{"id": "conv", "titulo": "Convenios y organizaciones", "desc": "Una organización presenta su proyecto institucional, se aprueba (IF), se completa la documentación y se firma el convenio — gestionado por la Dirección General, no por la Gerencia. La Gerencia hace seguimiento semanal de la firma y sube el convenio ya firmado a su carpeta."}, {"id": "vpn", "titulo": "Accesos VPN", "desc": "Se completa el formulario de solicitud de prórroga (usuario, referente GCBA, empresa, vigencia máxima 365 días) para habilitar el acceso remoto de un usuario externo."}, {"id": "ofi", "titulo": "Oficios y pedidos 104", "desc": "La Dirección deriva el oficio al programa correspondiente con plazo previo al vencimiento. El programa arma la información, se valida que sea coherente con lo pedido, y se responde por GEDO firmado por la Gerencia Operativa Legal, revisado antes por la abogada de la Dirección General."}, {"id": "der", "titulo": "Derivación al Consejo de Derechos", "desc": "Ante una vulneración de derechos: el programa eleva informe social, se carátula expediente en Mesa de Entradas, se eleva desde la Gerencia (firma la Gerencia Operativa Legal) y deriva a DGPDES o al Consejo de Derechos de NNyA."}, {"id": "log", "titulo": "Logística de actividades", "desc": "Cada programa calendariza el mes. De cada actividad sale un Brief que alimenta la solicitud de micro y la solicitud de comida (menú festivo, refrigerios, viandas). El destino final de esas solicitudes, una vez enviadas, no está documentado todavía."}, {"id": "tab", "titulo": "Tablero de pedidos", "desc": "Se totaliza mes a mes la cantidad de micros, refrigerios y viandas extraordinarias pedidas por cada programa."}, {"id": "aud", "titulo": "Auditoría de carga de asistencia", "desc": "Cotejo ítem por ítem entre la planilla de control propia y el archivo maestro de asistencias, para detectar faltantes, discrepancias e inconsistencias."}];
+const MAPA_INGRESO = {"expediente": {"titulo": "Por expediente (ingreso excepcional)", "desc": "Ingresa por expediente SADE. Se baja el formulario de ingreso (informe gráfico), se pasa a la coordinadora del programa por mail, se carga en un cuadro compartido (contacto con el adolescente, actividad elegida). Se arman los eleves que firma la Gerencia Operativa Legal, se vinculan al expediente y se remite al destinatario que lo envió."}, "oficio": {"titulo": "Por oficio (pedidos 104 y requerimientos)", "desc": "La Dirección deriva el oficio al programa correspondiente con un plazo previo al vencimiento. El programa arma la información, se ordena y se valida que sea coherente con lo pedido. Se responde por GEDO, firmado por la Gerencia Operativa Legal y revisado antes por la abogada de la Dirección General, y se envía por Mesa de Entradas."}};
+const MAPA_PROGRAMA_ORDEN = ["adolescencias", "lazos", "lideres", "coopa", "bajoflores", "turismo"];
+const MAPA_REDACT = [
+  ["Luisina Jaimes", "la Gerencia Operativa Legal"],
+  ["Ángeles Fava", "la Gerencia Operativa Legal"],
+  ["Paloma Besada", "la abogada de la Dirección General"],
+  ["PALOMASBESADA", "el usuario de Mesa de Entradas"],
+  ["Guadalupe", "el equipo de la Gerencia"],
+  ["Adriana", "el área de personal"],
+  ["Danilo Dignani", "el equipo legal de la Gerencia"],
+  ["Santiago Sandoná", "el equipo administrativo"],
+  ["Ana Prado Morello", "el equipo administrativo"],
+  ["\"Pablo\"", "el equipo de la Gerencia"],
+];
 
-function renderMapa(){
-  if(!mapaSvgCache && !mapaCargando){
-    mapaCargando = true;
-    cargarMapaMermaid();
-  }
-  return `
-    <div>
-      <p style="font-size:12.5px; color:var(--ink-soft); max-width:640px; margin:0 0 12px;">
-        Flujo de funcionamiento administrativo de la Gerencia: organizaciones y convenios, talleres en funcionamiento, calendarización y logística, ingreso y becas, seguimiento y derivaciones.
-      </p>
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoom(1.2)">Acercar +</button>
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoom(0.8)">Alejar -</button>
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="mapaZoomReset()">Restablecer</button>
-      </div>
-      <div id="mapa-canvas" style="border:1px solid var(--line); border-radius:10px; background:#fff; overflow:auto; padding:16px; max-height:70vh;">
-        <div id="mapa-graph" style="transform-origin: top left;">
-          ${mapaSvgCache ? mapaSvgCache : `<div style="font-size:13px; color:var(--ink-soft); padding:20px;">Cargando mapa…</div>`}
-        </div>
-      </div>
-      <div style="display:flex; gap:14px; flex-wrap:wrap; margin:12px 0 0; font-size:11.5px; color:var(--ink-soft);">
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#0F6E56;"></span>Programa (equipo de campo)</span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#534AB7;"></span>Gerencia Operativa</span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#993C1D;"></span>Gerencia Operativa Legal</span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#854F0B;"></span>Dirección General</span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:50%; display:inline-block; background:#5F5E5A;"></span>Actor externo</span>
-      </div>
-    </div>
-  `;
-}
+let mapaNav = { screen: "home" };
+let mapaOrgsCache = null;
+let mapaOrgsLoading = false;
+let mapaOpenGestion = null;
 
-async function cargarMapaMermaid(){
-  try{
-    const { default: mermaid } = await import('https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs');
-    mermaid.initialize({ startOnLoad:false, theme:'base', securityLevel:'loose',
-      themeVariables:{ fontFamily:'Inter, sans-serif', fontSize:'13px', lineColor:'#8A8878', primaryColor:'#F1EFE8', primaryBorderColor:'#5F5E5A', primaryTextColor:'#22262B' } });
-    const { svg } = await mermaid.render('gopia-map-svg', MAPA_GOPIA_MERMAID);
-    mapaSvgCache = svg;
-  }catch(e){
-    mapaSvgCache = `<div style="font-size:13px; color:var(--ink-soft); padding:20px;">No se pudo cargar el mapa: ${e.message}</div>`;
-  }
-  mapaCargando = false;
+function mapaGoHome(){ mapaNav = { screen:"home" }; mapaOpenGestion=null; renderRoot(); }
+function mapaGoTeam(){ mapaNav = { screen:"team" }; renderRoot(); }
+function mapaGoPrograma(id){ mapaNav = { screen:"programa", programaId:id }; mapaOpenGestion=null; renderRoot(); }
+function mapaGoOrg(orgId, programaId){ mapaNav = { screen:"org", orgId, programaId }; renderRoot(); }
+function mapaGoIngreso(){ mapaNav = { screen:"ingreso" }; renderRoot(); }
+function mapaToggleGestion(key){ mapaOpenGestion = (mapaOpenGestion===key) ? null : key; renderRoot(); }
+
+async function cargarMapaOrgs(){
+  if(mapaOrgsCache || mapaOrgsLoading) return;
+  mapaOrgsLoading = true;
+  const { data, error } = await sb.from("organizaciones")
+    .select("id,nombre,nombre_alternativo,observaciones,sedes(id,nombre,direccion),convenios(numero,estado,fecha_inicio_real,fecha_fin_real),participacion_org_programa(programa_id,modalidad,tipo_actividad)")
+    .order("nombre");
+  mapaOrgsCache = error ? [] : data;
+  mapaOrgsLoading = false;
   renderRoot();
 }
 
-let mapaZoomScale = 1;
-function mapaZoom(factor){
-  mapaZoomScale = Math.min(Math.max(mapaZoomScale * factor, 0.4), 3);
-  const g = document.getElementById("mapa-graph");
-  if(g) g.style.transform = "scale(" + mapaZoomScale + ")";
+function mapaBreadcrumb(items){
+  return '<div class="breadcrumb">' + items.map((it,i) => {
+    const isLast = i === items.length-1;
+    return (i>0 ? '<span>/</span>' : '') + (isLast ? '<span>'+it.label+'</span>' : '<button onclick="'+it.action+'">'+it.label+'</button>');
+  }).join('') + '</div>';
 }
-function mapaZoomReset(){
-  mapaZoomScale = 1;
-  const g = document.getElementById("mapa-graph");
-  if(g) g.style.transform = "scale(1)";
+
+function mapaGestionesChips(lista, prefix){
+  return '<div class="icon-row">' + lista.map((g,i) => {
+    const key = prefix + "_" + i;
+    return `<button class="icon-chip ${mapaOpenGestion===key?'open':''}" onclick="mapaToggleGestion('${key}')">⚙ ${g.titulo}</button>`;
+  }).join('') + '</div>' +
+  lista.map((g,i) => {
+    const key = prefix + "_" + i;
+    return mapaOpenGestion===key ? `<div class="gestion-detail">${g.desc}</div>` : '';
+  }).join('');
+}
+
+function mapaRedactar(texto){
+  let t = texto;
+  MAPA_REDACT.forEach(([nombre, reemplazo]) => { t = t.split(nombre).join(reemplazo); });
+  return t;
+}
+
+function descargarInformeMapa(){
+  const orgs = mapaOrgsCache || [];
+  let out = [];
+  out.push("MAPA DE FUNCIONAMIENTO — GERENCIA OPERATIVA GOPIA");
+  out.push("=".repeat(60));
+  out.push("");
+  out.push("1. GERENCIA OPERATIVA");
+  out.push("-".repeat(30));
+  out.push("Gerenta Operativa: Paula Seminare.");
+  out.push("El resto del equipo se identifica por rol, sin nombre propio, salvo coordinadores/as.");
+  out.push("");
+  out.push("2. GESTIONES GENERALES DE LA GERENCIA");
+  out.push("-".repeat(30));
+  MAPA_GESTIONES_GENERALES.forEach(g => {
+    out.push(g.titulo.toUpperCase());
+    out.push(mapaRedactar(g.desc));
+    out.push("");
+  });
+  out.push("3. PROGRAMAS");
+  out.push("-".repeat(30));
+  MAPA_PROGRAMA_ORDEN.forEach(id => {
+    const p = MAPA_PROGRAMAS[id];
+    out.push("");
+    out.push(p.nombre.toUpperCase());
+    out.push("Coordinador/a: " + (p.coordinador || "sin confirmar"));
+    out.push(mapaRedactar(p.brief.replace(/<br\/?>/g, " ").replace(/<b>|<\/b>/g, "")));
+    out.push("Cómo se gestiona: " + mapaRedactar(p.gestion));
+    if(p.diagnostico){ out.push("Diagnóstico 2026 y desafío 2027: " + mapaRedactar(p.diagnostico.replace(/<br\/?>/g, " ").replace(/<b>|<\/b>/g, ""))); }
+    const gestiones = MAPA_GESTIONES_PROGRAMA[id] || [];
+    if(gestiones.length){
+      out.push("Gestiones propias de este programa:");
+      gestiones.forEach(g => out.push("  - " + g.titulo + ": " + mapaRedactar(g.desc.replace(/<br\/?>/g, " ").replace(/<b>|<\/b>/g, "").replace(/•/g, "-"))));
+    }
+    const filtradas = orgs.filter(o => (o.participacion_org_programa||[]).some(pp => pp.programa_id === id));
+    if(filtradas.length){
+      out.push((p.tiene_organizaciones ? "Organizaciones:" : "Lugares:"));
+      filtradas.forEach(o => {
+        const conv = (o.convenios||[])[0];
+        const convTxt = conv ? ("convenio " + (conv.numero||"s/n") + (conv.fecha_inicio_real ? ", vigencia desde " + conv.fecha_inicio_real : "")) : "sin convenio cargado";
+        out.push("  - " + o.nombre + " (" + convTxt + ")");
+      });
+    }
+  });
+  out.push("");
+  out.push("4. GESTIÓN DE INGRESO A TALLERES (por fuera de los programas)");
+  out.push("-".repeat(30));
+  Object.values(MAPA_INGRESO).forEach(i => {
+    out.push(i.titulo.toUpperCase());
+    out.push(mapaRedactar(i.desc));
+    out.push("");
+  });
+
+  const texto = out.join("\n");
+  const blob = new Blob([texto], {type:"text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "informe_GOPIA.txt";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function renderMapa(){
+  if(mapaNav.screen === "home"){
+    return `
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 16px;">Empezá por la Gerencia. Tocá cualquier título para ver cómo se gestiona y quién lo hace.</p>
+      <button class="root-card" onclick="mapaGoTeam()">
+        <p class="card-title">Gerencia Operativa — GOPIA</p>
+        <p class="card-sub">Tocá para ver el equipo y las responsabilidades de cada uno/a</p>
+      </button>
+      <button class="report-btn" onclick="descargarInformeMapa()">⬇ Descargar informe completo</button>
+      <p class="section-label">Gestiones generales de la Gerencia</p>
+      ${mapaGestionesChips(MAPA_GESTIONES_GENERALES, "gral")}
+      <p class="section-label">Programas</p>
+      <div class="grid-mapa">
+        ${MAPA_PROGRAMA_ORDEN.map(id => `
+          <button class="card" onclick="mapaGoPrograma('${id}')">
+            <p class="card-title">${MAPA_PROGRAMAS[id].nombre}</p>
+            <p class="card-sub">Brief, gestiones, organizaciones y lugares</p>
+          </button>
+        `).join('')}
+      </div>
+      <p class="section-label">Por fuera de los programas</p>
+      <button class="card" onclick="mapaGoIngreso()">
+        <p class="card-title">Gestión de ingreso a talleres</p>
+        <p class="card-sub">Por expediente y por oficio — lo gestiona directamente el equipo GOPIA</p>
+      </button>
+    `;
+  }
+
+  if(mapaNav.screen === "team"){
+    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:"Equipo"}]) + `
+      ${MAPA_TEAM.map(t => `
+        <div class="team-item">
+          <div><p class="team-name">${t.nombre}</p><p class="team-role">${t.rol}</p></div>
+          <p class="team-resp">${t.resp}</p>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  if(mapaNav.screen === "ingreso"){
+    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:"Gestión de ingreso a talleres"}]) + `
+      ${Object.values(MAPA_INGRESO).map(i => `
+        <div class="list-item" style="cursor:default;">
+          <p class="nombre">${i.titulo}</p><p class="meta">${i.desc}</p>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  if(mapaNav.screen === "programa"){
+    const p = MAPA_PROGRAMAS[mapaNav.programaId];
+    const gestiones = MAPA_GESTIONES_PROGRAMA[mapaNav.programaId] || [];
+    if(!mapaOrgsCache) cargarMapaOrgs();
+    const orgs = mapaOrgsCache || [];
+    const filtradas = orgs.filter(o => (o.participacion_org_programa||[]).some(pp => pp.programa_id === mapaNav.programaId));
+    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:p.nombre}]) + `
+      ${p.coordinador ? `<p class="subtitle" style="font-weight:600; color:var(--accent);">Coordinador/a: ${p.coordinador}</p>` : `<p class="subtitle falta">Coordinador/a: falta cargar</p>`}
+      <p class="brief">${p.brief}</p>
+      <div class="gestion-box"><b>Cómo se gestiona</b>${p.gestion}</div>
+      ${p.diagnostico ? `<div class="gestion-box" style="background:var(--warn-soft); color:var(--warn);"><b>Diagnóstico 2026 y desafío 2027</b>${p.diagnostico}</div>` : ""}
+      ${gestiones.length > 0 ? `<p class="section-label">Gestiones propias de este programa</p>${mapaGestionesChips(gestiones, "prog_"+mapaNav.programaId)}` : `<p class="status">Sin gestiones particulares cargadas todavía — comparte las generales de la Gerencia.</p>`}
+      <p class="section-label">${p.tiene_organizaciones ? "Organizaciones" : "Lugares"}</p>
+      ${!mapaOrgsCache ? '<p class="status">Cargando…</p>' : (filtradas.length===0 ? '<p class="status">Todavía no hay organizaciones/lugares cargados para este programa.</p>' : filtradas.map(o => {
+        const conv = (o.convenios||[])[0];
+        const convLabel = conv ? (conv.fecha_inicio_real ? 'Vigencia desde ' + conv.fecha_inicio_real : conv.numero) : null;
+        return `<div class="list-item" onclick="mapaGoOrg('${o.id}','${mapaNav.programaId}')">
+          <p class="nombre">${o.nombre}</p>
+          <p class="meta">${convLabel ? '<span class="badge badge-ok">Convenio</span> ' + convLabel : '<span class="badge badge-falta">Sin convenio cargado</span>'}</p>
+        </div>`;
+      }).join(''))}
+    `;
+  }
+
+  if(mapaNav.screen === "org"){
+    const orgs = mapaOrgsCache || [];
+    const org = orgs.find(o => o.id === mapaNav.orgId);
+    const p = MAPA_PROGRAMAS[mapaNav.programaId];
+    if(!org){ return '<p class="status">Cargando…</p>'; }
+    const conv = (org.convenios||[])[0];
+    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:p.nombre, action:"mapaGoPrograma('"+mapaNav.programaId+"')"},{label:org.nombre}]) + `
+      ${org.nombre_alternativo ? '<p class="subtitle">' + org.nombre_alternativo + '</p>' : ''}
+      <div class="gestion-box"><b>Convenio</b>
+        ${conv ? ('N° expediente: ' + (conv.numero||'—') + '<br/>Vigencia: ' + (conv.fecha_inicio_real ? conv.fecha_inicio_real + ' a ' + (conv.fecha_fin_real||'—') : '<span class="falta">fecha de firma: falta cargar</span>')) : '<span class="falta">Sin convenio cargado en la base</span>'}
+      </div>
+      ${org.observaciones ? '<p class="brief" style="font-style:italic; color:var(--ink-soft);">' + org.observaciones + '</p>' : ''}
+      <p class="section-label">Lugares</p>
+      ${(org.sedes||[]).length === 0 ? '<p class="status">Sin lugares cargados.</p>' : (org.sedes||[]).map(s => `
+        <div class="list-item" style="cursor:default;">
+          <p class="nombre">${s.direccion || s.nombre}</p>
+          <p class="meta"><span class="falta">Talleres y cupo total de adolescentes: falta cargar</span></p>
+        </div>
+      `).join('')}
+    `;
+  }
+  return "";
 }
 
 function renderTareas(){
@@ -1324,7 +1534,7 @@ function viewModalHtml(){
           ${estado?`<div>${estado.icon} ${estado.label}${form.proximoPaso?` — ${escapeHtml(form.proximoPaso)}`:""}</div>`:""}
           ${form.observaciones?`<div style="font-style:italic;">${escapeHtml(form.observaciones)}</div>`:""}
         </div>
-        <button style="width:100%; margin-top:18px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px; font-weight:700; font-size:13px;" onclick="abrirLogin()">Iniciar sesión para editar</button>
+        <button style="width:100%; margin-top:18px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px; font-weight:700; font-size:13px;" onclick="${currentUser ? 'toggleModoEditor()' : 'abrirLogin()'}">${currentUser ? 'Activar modo editor' : 'Iniciar sesión para editar'}</button>
       </div>
     </div>
   `;
@@ -1580,7 +1790,7 @@ function viewTareaModalHtml(){
           ${t.fechaLimite?`<div class="mono">📅 ${t.fechaLimite}</div>`:""}
           ${t.observaciones?`<div style="font-style:italic;">${escapeHtml(t.observaciones)}</div>`:""}
         </div>
-        <button style="width:100%; margin-top:18px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px; font-weight:700; font-size:13px;" onclick="abrirLogin()">Iniciar sesión para editar</button>
+        <button style="width:100%; margin-top:18px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px; font-weight:700; font-size:13px;" onclick="${currentUser ? 'toggleModoEditor()' : 'abrirLogin()'}">${currentUser ? 'Activar modo editor' : 'Iniciar sesión para editar'}</button>
       </div>
     </div>
   `;

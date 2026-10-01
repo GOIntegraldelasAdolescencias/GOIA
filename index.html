@@ -79,6 +79,28 @@
   .team-resp{font-size:12.5px; color:var(--ink-soft); margin:0; max-width:420px;}
   .status{font-size:12px; color:var(--ink-soft); margin:10px 0;}
   .falta{font-size:11.5px; color:#8A2E2E; font-style:italic;}
+
+  /* ---- Mapa GOPIA: cuadro sinóptico ---- */
+  .sinoptico{list-style:none; margin:0; padding:0;}
+  .nivel1 > li{position:relative; margin-bottom:28px;}
+  .sinoptico .rama{list-style:none; margin:0; padding:0 0 0 32px; position:relative;}
+  .sinoptico .rama::before{content:""; position:absolute; left:11px; top:0; bottom:22px; width:0; border-left:3px solid #B8B6A8;}
+  .sinoptico .rama > li{position:relative; padding-left:20px; margin-bottom:18px;}
+  .sinoptico .rama > li::before{content:""; position:absolute; left:0; top:15px; width:18px; height:0; border-top:3px solid #B8B6A8;}
+  .titulo-l1{display:inline-block; font-size:17px; font-weight:800; color:#fff; background:var(--accent); padding:7px 16px; border-radius:8px; margin-bottom:10px;}
+  .titulo-l1.orbital-sin{background:#993C1D;}
+  .titulo-l2{display:inline-block; font-size:14.5px; font-weight:800; color:var(--accent); background:var(--accent-soft); padding:5px 13px; border-radius:7px; margin-bottom:8px;}
+  .titulo-l2.orbital-sin{color:#993C1D; background:#FAECE7;}
+  .titulo-l3{display:block; font-size:12.5px; font-weight:700; color:var(--ink); text-transform:uppercase; letter-spacing:.03em; margin-bottom:5px;}
+  .sinoptico .contenido{padding:0 0 6px 2px; font-size:13px; line-height:1.6; color:var(--ink-soft); max-width:640px;}
+  .sinoptico .contenido p{margin:0 0 9px;}
+  .sinoptico .contenido b{color:var(--ink);}
+  .team-grid-sin{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:6px;}
+  @media (max-width:560px){ .team-grid-sin{grid-template-columns:1fr;} }
+  .team-item-sin{background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 12px;}
+  .team-item-sin b{display:block; font-size:13px;}
+  .rol-sin{font-size:11.5px; color:var(--accent); font-weight:700;}
+  .org-line-sin{font-size:12.5px;}
 </style>
 </head>
 <body>
@@ -1141,18 +1163,10 @@ const MAPA_REDACT = [
   ["Ana Prado Morello", "el equipo administrativo"],
 ];
 
-let mapaNav = { screen: "home" };
 let mapaOrgsCache = null;
 let mapaOrgsLoading = false;
-let mapaOpenGestion = null;
 
-function mapaGoHome(){ mapaNav = { screen:"home" }; mapaOpenGestion=null; renderRoot(); }
-function mapaGoTeam(){ mapaNav = { screen:"team" }; renderRoot(); }
-function mapaGoPrograma(id){ mapaNav = { screen:"programa", programaId:id }; mapaOpenGestion=null; renderRoot(); }
-function mapaGoOrg(orgId, programaId){ mapaNav = { screen:"org", orgId, programaId }; renderRoot(); }
-function mapaToggleGestion(key){ mapaOpenGestion = (mapaOpenGestion===key) ? null : key; renderRoot(); }
-
-async function cargarMapaOrgs(){
+async function cargarMapaOrgsSinoptico(){
   if(mapaOrgsCache || mapaOrgsLoading) return;
   mapaOrgsLoading = true;
   const { data, error } = await sb.from("organizaciones")
@@ -1161,24 +1175,21 @@ async function cargarMapaOrgs(){
   mapaOrgsCache = error ? [] : data;
   mapaOrgsLoading = false;
   renderRoot();
+  // una vez que el DOM ya tiene los <span id="orgs-...">, los completamos sin rehacer todo el render
+  rellenarOrgsSinoptico();
 }
 
-function mapaBreadcrumb(items){
-  return '<div class="breadcrumb">' + items.map((it,i) => {
-    const isLast = i === items.length-1;
-    return (i>0 ? '<span>/</span>' : '') + (isLast ? '<span>'+it.label+'</span>' : '<button onclick="'+it.action+'">'+it.label+'</button>');
-  }).join('') + '</div>';
-}
-
-function mapaGestionesChips(lista, prefix){
-  return '<div class="icon-row">' + lista.map((g,i) => {
-    const key = prefix + "_" + i;
-    return `<button class="icon-chip ${mapaOpenGestion===key?'open':''}" onclick="mapaToggleGestion('${key}')">⚙ ${g.titulo}</button>`;
-  }).join('') + '</div>' +
-  lista.map((g,i) => {
-    const key = prefix + "_" + i;
-    return mapaOpenGestion===key ? `<div class="gestion-detail">${g.desc}</div>` : '';
-  }).join('');
+function rellenarOrgsSinoptico(){
+  const orgs = mapaOrgsCache || [];
+  const porPrograma = {};
+  orgs.forEach(o => (o.participacion_org_programa||[]).forEach(pp => {
+    (porPrograma[pp.programa_id] = porPrograma[pp.programa_id] || []).push(o.nombre);
+  }));
+  MAPA_PROGRAMA_ORDEN.forEach(pid => {
+    const el = document.getElementById('orgs-'+pid);
+    if(!el) return;
+    el.innerHTML = (porPrograma[pid] && porPrograma[pid].length) ? porPrograma[pid].sort().join(' · ') : '<span class="falta">Sin organizaciones/lugares cargados todavía.</span>';
+  });
 }
 
 function mapaRedactar(texto){
@@ -1262,93 +1273,64 @@ function descargarInformeMapa(){
 }
 
 function renderMapa(){
-  if(mapaNav.screen === "home"){
-    return `
-      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 16px;">La Gerencia Operativa se conforma con el equipo que la lleva adelante y con cada uno de los seis programas. Tocá cualquier título para ver en qué consiste y cómo se gestiona.</p>
-      <button class="root-card" onclick="mapaGoTeam()">
-        <p class="card-title">Gerencia Operativa — GOPIA</p>
-        <p class="card-sub">Equipo y responsabilidades de cada uno/a</p>
-      </button>
-      <button class="report-btn" onclick="descargarInformeMapa()">⬇ Descargar informe completo (Word)</button>
-      <p class="section-label">Programas — cómo se conforma la Gerencia</p>
-      <div class="grid-mapa">
-        ${MAPA_PROGRAMA_ORDEN.map(id => `
-          <button class="card" onclick="mapaGoPrograma('${id}')">
-            <p class="card-title">${MAPA_PROGRAMAS[id].nombre}</p>
-            <p class="card-sub">En qué consiste, cómo se gestiona, organizaciones y lugares</p>
-          </button>
-        `).join('')}
+  if(!mapaOrgsCache) cargarMapaOrgsSinoptico();
+  else setTimeout(rellenarOrgsSinoptico, 0);
+
+  let out = `<button class="report-btn" onclick="descargarInformeMapa()">⬇ Descargar informe completo (Word)</button>`;
+  out += `<ul class="sinoptico nivel1">`;
+
+  out += `<li>
+    <span class="titulo-l1">Gerencia Operativa — GOPIA</span>
+    <div class="contenido">
+      <p>Se conforma con este equipo y con cada uno de los seis programas.</p>
+      <div class="team-grid-sin">
+        ${MAPA_TEAM.map(t => `<div class="team-item-sin"><b>${t.nombre}</b><div class="rol-sin">${t.rol}</div>${t.resp}</div>`).join('')}
       </div>
-      <p class="section-label" style="margin-top:32px; opacity:.75;">Trámites y gestiones administrativas de la Gerencia <span style="text-transform:none; font-weight:400;">(cuestiones de forma — no forman parte de la estructura principal)</span></p>
-      ${mapaGestionesChips(MAPA_GESTIONES_GENERALES, "gral")}
-    `;
-  }
+    </div>
+  </li>`;
 
-  if(mapaNav.screen === "team"){
-    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:"Equipo"}]) + `
-      ${MAPA_TEAM.map(t => `
-        <div class="team-item">
-          <div><p class="team-name">${t.nombre}</p><p class="team-role">${t.rol}</p></div>
-          <p class="team-resp">${t.resp}</p>
-        </div>
-      `).join('')}
-    `;
-  }
+  out += `<li>
+    <span class="titulo-l1">Programas</span>
+    <ul class="rama">
+      ${MAPA_PROGRAMA_ORDEN.map(pid => {
+        const p = MAPA_PROGRAMAS[pid];
+        const gestiones = MAPA_GESTIONES_PROGRAMA[pid] || [];
+        let sub = `<span class="titulo-l2">${p.nombre}</span><ul class="rama">`;
 
-  if(mapaNav.screen === "programa"){
-    const p = MAPA_PROGRAMAS[mapaNav.programaId];
-    const gestiones = MAPA_GESTIONES_PROGRAMA[mapaNav.programaId] || [];
-    if(!mapaOrgsCache) cargarMapaOrgs();
-    const orgs = mapaOrgsCache || [];
-    const filtradas = orgs.filter(o => (o.participacion_org_programa||[]).some(pp => pp.programa_id === mapaNav.programaId));
-    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:p.nombre}]) + `
-      ${p.coordinador ? `<p class="subtitle" style="font-weight:600; color:var(--accent);">Coordinador/a: ${p.coordinador}</p>` : `<p class="subtitle falta">Coordinador/a: falta cargar</p>`}
-      <p class="brief">${p.brief}</p>
-      <div class="gestion-box"><b>Cómo se gestiona</b>${p.gestion}</div>
-      ${p.diagnostico ? `<div class="gestion-box" style="background:var(--warn-soft); color:var(--warn);"><b>Diagnóstico 2026 y desafío 2027</b>${p.diagnostico}</div>` : ""}
-      ${gestiones.length > 0 ? `<p class="section-label">Gestiones propias de este programa</p>${mapaGestionesChips(gestiones, "prog_"+mapaNav.programaId)}` : `<p class="status">Sin gestiones particulares cargadas todavía — comparte las generales de la Gerencia.</p>`}
-      <p class="section-label">${p.tiene_organizaciones ? "Organizaciones" : "Lugares"}</p>
-      ${!mapaOrgsCache ? '<p class="status">Cargando…</p>' : (filtradas.length===0 ? '<p class="status">Todavía no hay organizaciones/lugares cargados para este programa.</p>' : filtradas.map(o => {
-        const conv = (o.convenios||[])[0];
-        const convLabel = conv ? (conv.fecha_inicio_real ? 'Vigencia desde ' + conv.fecha_inicio_real : conv.numero) : null;
-        return `<div class="list-item" onclick="mapaGoOrg('${o.id}','${mapaNav.programaId}')">
-          <p class="nombre">${o.nombre}</p>
-          <p class="meta">${convLabel ? '<span class="badge badge-ok">Convenio</span> ' + convLabel : '<span class="badge badge-falta">Sin convenio cargado</span>'}</p>
-        </div>`;
-      }).join(''))}
-    `;
-  }
+        sub += `<li><span class="titulo-l3">Qué es</span><div class="contenido">
+          <p class="coord">Coordinador/a: ${p.coordinador || 'falta cargar'}</p>
+          <p>${p.brief}</p>
+        </div></li>`;
 
-  if(mapaNav.screen === "org"){
-    const orgs = mapaOrgsCache || [];
-    const org = orgs.find(o => o.id === mapaNav.orgId);
-    const p = MAPA_PROGRAMAS[mapaNav.programaId];
-    if(!org){ return '<p class="status">Cargando…</p>'; }
-    const conv = (org.convenios||[])[0];
-    const programasDeEsta = (org.participacion_org_programa||[]).map(pp => (MAPA_PROGRAMAS[pp.programa_id]||{}).nombre || pp.programa_id).join(", ");
-    return mapaBreadcrumb([{label:"GOPIA", action:"mapaGoHome()"},{label:p.nombre, action:"mapaGoPrograma('"+mapaNav.programaId+"')"},{label:org.nombre}]) + `
-      <div class="gestion-box">
-        ${org.nombre_alternativo ? `<div><b>Razón social</b>${org.nombre_alternativo}</div>` : ""}
-        ${programasDeEsta ? `<div style="margin-top:8px;"><b>Programa/s</b>${programasDeEsta}</div>` : ""}
-        <div style="margin-top:8px;"><b>Convenio</b>
-          ${conv ? (
-            'N° expediente: ' + (conv.numero||'—') + '<br/>' +
-            'Vigencia: ' + (conv.fecha_inicio_real ? conv.fecha_inicio_real + ' a ' + (conv.fecha_fin_real||'—') : '<span class="falta">fecha de firma: falta cargar</span>')
-          ) : '<span class="falta">Sin convenio cargado en la base</span>'}
-        </div>
-      </div>
-      ${org.observaciones ? `<div class="gestion-box" style="background:var(--warn-soft); color:var(--warn);"><b>Observaciones</b>${org.observaciones}</div>` : ''}
-      <p class="section-label">Sedes</p>
-      ${(org.sedes||[]).length === 0 ? '<p class="status">Sin sedes cargadas.</p>' : (org.sedes||[]).map(s => `
-        <div class="list-item" style="cursor:default;">
-          <p class="nombre">${s.nombre && s.nombre !== "Sede única" ? s.nombre + " — " : ""}${s.direccion || ""}</p>
-          <p class="meta">${[s.barrio, s.comuna].filter(Boolean).join(" · ") || '<span class="falta">Barrio/Comuna: falta cargar</span>'}</p>
-          <p class="meta" style="margin-top:4px;"><span class="falta">Talleres y cupo total de adolescentes: falta cargar</span></p>
-        </div>
-      `).join('')}
-    `;
-  }
-  return "";
+        sub += `<li><span class="titulo-l3">Cómo se gestiona</span><div class="contenido"><p>${p.gestion}</p></div></li>`;
+
+        if(p.diagnostico){
+          sub += `<li><span class="titulo-l3">Diagnóstico 2026 y desafío 2027</span><div class="contenido"><p>${p.diagnostico}</p></div></li>`;
+        }
+
+        if(gestiones.length){
+          sub += `<li><span class="titulo-l3">Gestiones propias</span><ul class="rama">
+            ${gestiones.map(g => `<li><span class="titulo-l3">${g.titulo}</span><div class="contenido"><p>${g.desc}</p></div></li>`).join('')}
+          </ul></li>`;
+        }
+
+        sub += `<li><span class="titulo-l3">${p.tiene_organizaciones ? 'Organizaciones' : 'Lugares'}</span><div class="contenido"><p class="org-line-sin" id="orgs-${pid}">cargando…</p></div></li>`;
+
+        sub += `</ul>`;
+        return `<li>${sub}</li>`;
+      }).join('')}
+    </ul>
+  </li>`;
+
+  out += `<li>
+    <span class="titulo-l1 orbital-sin">Trámites y gestiones administrativas de la Gerencia</span>
+    <ul class="rama">
+      ${MAPA_GESTIONES_GENERALES.map(g => `<li><span class="titulo-l2 orbital-sin">${g.titulo}</span><div class="contenido"><p>${g.desc}</p></div></li>`).join('')}
+    </ul>
+  </li>`;
+
+  out += `</ul>`;
+  return out;
 }
 
 function renderTareas(){

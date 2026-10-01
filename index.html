@@ -347,9 +347,34 @@ let modalOpen = false;
 let modalMode = "form"; // "form" | "view" | "login"
 let modalKind = "actividad"; // "actividad" | "tarea" | "resumen"
 let resumenFiltros = { programaId:"todos", periodoTipo:"mes", anio:String(new Date().getFullYear()), mes:String(new Date().getMonth()+1).padStart(2,"0"), dia:dateKeySafe(), tipo:"todos" };
+let resumenResultados = null; // null = todavía no se buscó; [] o [...] = resultado de la búsqueda
+let resumenSeleccion = new Set();
 function dateKeySafe(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
-function abrirResumen(){ modalKind = "resumen"; modalMode = "form"; modalOpen = true; renderModal(); }
-function actualizarResumenFiltro(campo, valor){ resumenFiltros[campo] = valor; renderModal(); }
+function abrirResumen(){ modalKind = "resumen"; modalMode = "form"; modalOpen = true; resumenResultados = null; resumenSeleccion = new Set(); renderModal(); }
+function actualizarResumenFiltro(campo, valor){ resumenFiltros[campo] = valor; resumenResultados = null; renderModal(); }
+function buscarResumen(){
+  const f = resumenFiltros;
+  const filtradas = actividades.filter(a => {
+    if(f.programaId !== "todos" && !(a.programaIds||[a.programaId]).includes(f.programaId)) return false;
+    if(f.tipo !== "todos" && categoriaTipo(a.tipoRepeticion) !== f.tipo) return false;
+    if(f.periodoTipo === "dia"){
+      if(a.fecha !== f.dia) return false;
+    } else {
+      const ym = a.fecha ? a.fecha.slice(0,7) : "";
+      if(ym !== `${f.anio}-${f.mes}`) return false;
+    }
+    return true;
+  }).sort((a,b) => (a.fecha||"").localeCompare(b.fecha||"") || (a.horaInicio||"").localeCompare(b.horaInicio||""));
+  resumenResultados = filtradas;
+  resumenSeleccion = new Set(filtradas.map(a=>a.id));
+  renderModal();
+}
+function toggleResumenSeleccion(id){ resumenSeleccion.has(id) ? resumenSeleccion.delete(id) : resumenSeleccion.add(id); renderModal(); }
+function toggleResumenTodas(){
+  if(resumenSeleccion.size === (resumenResultados||[]).length){ resumenSeleccion = new Set(); }
+  else { resumenSeleccion = new Set((resumenResultados||[]).map(a=>a.id)); }
+  renderModal();
+}
 let nuevaFechaCopia = "";
 
 let tareas = [];
@@ -1522,7 +1547,27 @@ function resumenModalHtml(){
           <button type="button" onclick="actualizarResumenFiltro('tipo','normal')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.tipo==='normal'?"var(--accent)":"var(--line)"}; background:${f.tipo==='normal'?"var(--accent-soft)":"#fff"}; color:${f.tipo==='normal'?"var(--accent)":"var(--ink-soft)"};">Jornada normal</button>
         </div>
 
-        <button onclick="descargarResumenWord()" style="width:100%; background:var(--accent); color:#fff; border-radius:8px; padding:11px; font-weight:700; font-size:13.5px;">⬇ Descargar</button>
+        <button onclick="buscarResumen()" style="width:100%; background:var(--accent); color:#fff; border-radius:8px; padding:11px; font-weight:700; font-size:13.5px; margin-bottom:${resumenResultados ? "14px" : "0"};">Buscar actividades</button>
+
+        ${resumenResultados !== null ? `
+          <div style="border-top:1px solid var(--line); padding-top:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <span style="font-size:12px; font-weight:600; color:var(--ink-soft);">${resumenResultados.length} actividad${resumenResultados.length===1?"":"es"} encontrada${resumenResultados.length===1?"":"s"}</span>
+              ${resumenResultados.length > 0 ? `<button onclick="toggleResumenTodas()" style="font-size:12px; font-weight:600; color:var(--accent);">${resumenSeleccion.size === resumenResultados.length ? "Destildar todas" : "Tildar todas"}</button>` : ""}
+            </div>
+            ${resumenResultados.length === 0 ? `<p style="font-size:13px; color:var(--ink-soft); font-style:italic;">No hay actividades cargadas que coincidan con estos filtros.</p>` : `
+              <div style="max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; margin-bottom:16px;">
+                ${resumenResultados.map(a => `
+                  <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer;">
+                    <input type="checkbox" style="margin-top:2px;" ${resumenSeleccion.has(a.id)?"checked":""} onchange="toggleResumenSeleccion('${a.id}')" />
+                    <span style="font-size:12.5px;"><b>${escapeHtml(a.titulo||"(sin título)")}</b><br/><span style="color:var(--ink-soft);">${a.fecha}${a.horaInicio?" · "+a.horaInicio:""}${a.sede?" · "+escapeHtml(a.sede):""}</span></span>
+                  </label>
+                `).join("")}
+              </div>
+              <button onclick="descargarResumenWord()" style="width:100%; background:var(--accent); color:#fff; border-radius:8px; padding:11px; font-weight:700; font-size:13.5px;" ${resumenSeleccion.size===0?"disabled":""}>⬇ Descargar ${resumenSeleccion.size} seleccionada${resumenSeleccion.size===1?"":"s"} (Word)</button>
+            `}
+          </div>
+        ` : ""}
       </div>
     </div>
   `;
@@ -1530,17 +1575,7 @@ function resumenModalHtml(){
 
 function descargarResumenWord(){
   const f = resumenFiltros;
-  let filtradas = actividades.filter(a => {
-    if(f.programaId !== "todos" && !(a.programaIds||[a.programaId]).includes(f.programaId)) return false;
-    if(f.tipo !== "todos" && categoriaTipo(a.tipoRepeticion) !== f.tipo) return false;
-    if(f.periodoTipo === "dia"){
-      if(a.fecha !== f.dia) return false;
-    } else {
-      const ym = a.fecha ? a.fecha.slice(0,7) : "";
-      if(ym !== `${f.anio}-${f.mes}`) return false;
-    }
-    return true;
-  }).sort((a,b) => (a.fecha||"").localeCompare(b.fecha||"") || (a.horaInicio||"").localeCompare(b.horaInicio||""));
+  let filtradas = (resumenResultados||[]).filter(a => resumenSeleccion.has(a.id));
 
   const periodoLabel = f.periodoTipo === "dia" ? f.dia : `${MESES[parseInt(f.mes)-1]} ${f.anio}`;
   const programaLabel = f.programaId === "todos" ? "Todos los programas" : (programaById(f.programaId)||{}).nombre || f.programaId;

@@ -1169,11 +1169,18 @@ let mapaOrgsLoading = false;
 async function cargarMapaOrgsSinoptico(){
   if(mapaOrgsCache || mapaOrgsLoading) return;
   mapaOrgsLoading = true;
-  const { data, error } = await sb.from("organizaciones")
-    .select("id,nombre,nombre_alternativo,observaciones,sedes(id,nombre,direccion,barrio,comuna),convenios(numero,estado,fecha_inicio_real,fecha_fin_real),participacion_org_programa(programa_id,modalidad,tipo_actividad)")
-    .order("nombre");
-  mapaOrgsCache = error ? [] : data;
-  mapaOrgsLoading = false;
+  try{
+    const { data, error } = await sb.from("organizaciones")
+      .select("id,nombre,nombre_alternativo,observaciones,sedes(id,nombre,direccion,barrio,comuna),convenios(numero,estado,fecha_inicio_real,fecha_fin_real),participacion_org_programa(programa_id,modalidad,tipo_actividad)")
+      .order("nombre");
+    if(error){ console.error("Error cargando organizaciones:", error); }
+    mapaOrgsCache = error ? [] : data;
+  }catch(e){
+    console.error("Excepción cargando organizaciones:", e);
+    mapaOrgsCache = [];
+  }finally{
+    mapaOrgsLoading = false;
+  }
   renderRoot();
   // una vez que el DOM ya tiene los <span id="orgs-...">, los completamos sin rehacer todo el render
   rellenarOrgsSinoptico();
@@ -1278,11 +1285,14 @@ function renderNodoGestion(g, claseTitulo){
   return `<li><span class="${claseTitulo}">${g.titulo}</span>${bloque}</li>`;
 }
 
+function recargarMapaOrgs(){ mapaOrgsCache = null; mapaOrgsLoading = false; renderRoot(); }
+
 function renderMapa(){
   if(!mapaOrgsCache) cargarMapaOrgsSinoptico();
   else setTimeout(rellenarOrgsSinoptico, 0);
 
   let out = `<button class="report-btn" onclick="descargarInformeMapa()">⬇ Descargar informe completo (Word)</button>`;
+  out += `<button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; margin-bottom:14px;" onclick="recargarMapaOrgs()">↻ Recargar organizaciones</button>`;
   out += `<ul class="sinoptico nivel1">`;
 
   out += `<li>

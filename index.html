@@ -109,8 +109,6 @@
 
 <!-- Librería cliente de Supabase -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<!-- Lector / generador de Excel (Importar y Exportar) -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <script>
 /* ============================================================
@@ -176,7 +174,7 @@ const parseKey = k => { const [y,m,d]=k.split("-").map(Number); return new Date(
 const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
-  id:null, titulo:"", suspendida:false, programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
+  id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandasLista:[{tipo:"",cantidad:""}], refrigerios:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
@@ -298,7 +296,6 @@ function toRow(f){
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
     observaciones: f.observaciones || null,
     tipo_repeticion: f.tipoRepeticion || "unica",
-    suspendida: !!f.suspendida,
   };
 }
 function fromRow(r){
@@ -323,7 +320,6 @@ function fromRow(r){
     observaciones: r.observaciones || "",
     grupoId: r.grupo_id || null,
     tipoRepeticion: r.tipo_repeticion || "unica",
-    suspendida: !!r.suspendida,
   };
 }
 
@@ -580,7 +576,6 @@ function abrirEdicion(id){
   modalMode = puedeEditar() ? "form" : "view";
   modalOpen = true; renderModal();
 }
-function setSuspendida(v){ form.suspendida = !!v; renderModal(); } // (no usar "form." dentro de un onchange inline: ahí "form" es el formulario HTML del input)
 function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
 function agregarVianda(){ form.viandasLista.push({tipo:"",cantidad:""}); renderModal(); }
 function quitarVianda(i){
@@ -800,531 +795,6 @@ async function importData(input){
   input.value = "";
 }
 
-/* ===================== Importar Excel de Micros =====================
-   Lee la planilla "Micros" (un micro por renglón) y la convierte en UNA actividad por salida:
-   - Misma fecha + hora + programa solicitante + detalle  =>  una sola actividad; "Micros" = cantidad de renglones.
-   - Responsable = horarios (salida / regreso) + nombre del solicitante + celular.
-   - Sede = "Sale de". Dirección = "Destino".
-   - "Talleres habituales" y "Prácticas…" => Jornada normal. El resto => Evento único.
-   Antes de guardar muestra una vista previa; las actividades ya cargadas (misma fecha + programa + título) se omiten. */
-
-/* IMPEXCEL-PURE-START */
-function impNorm(s){ return String(s==null?"":s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim(); }
-function impTexto(v){ return String(v==null?"":v).replace(/\s+/g," ").trim(); }
-function impFecha(v){
-  if(v==null || v==="") return null;
-  let y,m,d;
-  if(typeof v === "number"){
-    const p = XLSX.SSF.parse_date_code(v);
-    if(!p) return null;
-    y=p.y; m=p.m; d=p.d;
-  } else {
-    const s = String(v).trim();
-    let r = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,5})(?:\D|$)/);
-    if(r){ d=+r[1]; m=+r[2]; y=+r[3]; if(r[3].length===2) y+=2000; }
-    else {
-      r = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-      if(!r) return null;
-      y=+r[1]; m=+r[2]; d=+r[3];
-    }
-  }
-  if(!(y>=2000 && y<=2100)) return null;
-  const dt = new Date(y, m-1, d);
-  if(dt.getFullYear()!==y || dt.getMonth()!==m-1 || dt.getDate()!==d) return null;
-  return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-}
-function impHora(v){
-  if(v==null || v==="") return "";
-  if(typeof v === "number"){
-    const min = Math.round((v - Math.floor(v)) * 1440) % 1440;
-    return `${String(Math.floor(min/60)).padStart(2,"0")}:${String(min%60).padStart(2,"0")}`;
-  }
-  const s = String(v).trim();
-  let r = s.match(/^(\d{1,2}):(\d{2})/);
-  if(r) return `${r[1].padStart(2,"0")}:${r[2]}`;
-  r = s.match(/^(\d{1,2})\s*(?:h|hs|hrs)?\.?$/i);
-  if(r) return `${r[1].padStart(2,"0")}:00`;
-  return "";
-}
-function impPrograma(prog){
-  const n = impNorm(prog);
-  if(n.startsWith("adolescenc")) return "adolescencias";
-  if(n.startsWith("lideres")) return "lideres";
-  if(n.startsWith("coopa")) return "coopa";
-  if(n.startsWith("tabf") || n.includes("bajo flores")) return "bajoflores";
-  if(n.startsWith("reconstruyendo") || n.startsWith("lazos")) return "lazos";
-  if(n.startsWith("turismo")) return "turismo";
-  return null;
-}
-function impTipo(detalle){
-  const n = impNorm(detalle);
-  if(n.includes("talleres habituales") || n.startsWith("practicas")) return "normal";
-  return "unica";
-}
-const IMP_COLUMNAS = [
-  ["prog",    n => n.startsWith("progr")],
-  ["tel",     n => n.startsWith("telefono")],
-  ["fecha",   n => n === "fecha"],
-  ["hora",    n => n === "hora"],
-  ["veh",     n => n.startsWith("vehiculo")],
-  ["adultos", n => n.includes("adultos")],
-  ["ninos",   n => n.includes("ninos")],
-  ["sale",    n => n.startsWith("sale")],
-  ["destino", n => n === "destino"],
-  ["regreso", n => n === "regreso"],
-  ["solic",   n => n.includes("solicitante")],
-  ["obs",     n => n.startsWith("observ")],
-  ["cant",    n => n.includes("asistentes")],
-  ["conj",    n => n.includes("conjunto")],
-  ["detalle", n => n.startsWith("detalle")],
-];
-function impDetectarEncabezado(aoa){
-  for(let i=0; i<Math.min(aoa.length, 20); i++){
-    const heads = (aoa[i]||[]).map(impNorm);
-    if(!heads.includes("fecha") || !heads.some(h=>h.startsWith("detalle"))) continue;
-    const usadas = new Set(); const col = {};
-    for(const [k, test] of IMP_COLUMNAS){
-      const j = heads.findIndex((h,idx) => !usadas.has(idx) && h && test(h));
-      if(j>=0){ col[k]=j; usadas.add(j); }
-    }
-    return { fila:i, col };
-  }
-  return null;
-}
-function impPlural(n, uno, varios){ return n===1 ? uno : varios; }
-function impProcesarFilas(aoa){
-  const enc = impDetectarEncabezado(aoa);
-  if(!enc) return { ok:false, error:"No encontré los encabezados de la planilla (necesito al menos las columnas FECHA y DETALLE DE LA ACTIVIDAD/EVENTO)." };
-  const faltan = ["prog","fecha","detalle"].filter(k => enc.col[k]===undefined);
-  if(faltan.length) return { ok:false, error:"Faltan columnas obligatorias: " + faltan.map(k=>({prog:"PROGR. SOLICITANTE",fecha:"FECHA",detalle:"DETALLE DE LA ACTIVIDAD/EVENTO"}[k])).join(", ") + "." };
-  const c = enc.col;
-  const get = (row,k) => c[k]===undefined ? "" : row[c[k]];
-  const errores = []; const avisos = [];
-  const grupos = new Map();
-  let filas = 0;
-  for(let i=enc.fila+1; i<aoa.length; i++){
-    const row = aoa[i] || [];
-    if(!row.some(v => impTexto(v)!=="")) continue;
-    const detalle = impTexto(get(row,"detalle"));
-    const progTxt = impTexto(get(row,"prog"));
-    const fechaRaw = get(row,"fecha");
-    if(!detalle && impTexto(fechaRaw)==="") continue;
-    filas++;
-    const nroFila = i+1;
-    const base = { fila:nroFila, programa:progTxt, detalle, fechaTexto: impTexto(fechaRaw) };
-    if(!detalle){ errores.push({...base, motivo:"Falta el detalle de la actividad."}); continue; }
-    const fecha = impFecha(fechaRaw);
-    if(!fecha){ errores.push({...base, motivo:`Fecha inválida o ilegible ("${impTexto(fechaRaw)}"). Corregila en el Excel y volvé a importar.`}); continue; }
-    const programaId = impPrograma(progTxt);
-    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${progTxt}").`}); continue; }
-    const hora = impHora(get(row,"hora"));
-    const key = [fecha, hora, impNorm(progTxt), impNorm(detalle)].join("|");
-    if(!grupos.has(key)) grupos.set(key, { fecha, hora, progTxt, programaId, detalle, rows:[], filasExcel:[] });
-    const g = grupos.get(key);
-    g.rows.push({
-      veh: impTexto(get(row,"veh")), adultos: impTexto(get(row,"adultos")), ninos: impTexto(get(row,"ninos")),
-      sale: impTexto(get(row,"sale")), destino: impTexto(get(row,"destino")), regreso: impTexto(get(row,"regreso")),
-      tel: impTexto(get(row,"tel")), solic: impTexto(get(row,"solic")), obs: impTexto(get(row,"obs")),
-      cant: impTexto(get(row,"cant")), conj: impTexto(get(row,"conj")),
-    });
-    g.filasExcel.push(nroFila);
-  }
-  const uniq = arr => { const vistos = new Set(); const out=[]; for(const v of arr){ if(!v) continue; const k=impNorm(v); if(!vistos.has(k)){ vistos.add(k); out.push(v); } } return out; };
-  const esConj = x => { const n = impNorm(x.conj); return n!=="" && n!=="no"; };
-  // 1) Bloques = una salida. Los grupos "en conjunto con otra área" del mismo día y detalle se juntan en un solo bloque.
-  const bloques = new Map();
-  for(const [k, g] of grupos){
-    const conj = g.rows.some(esConj);
-    const bk = conj ? `conj|${g.fecha}|${impNorm(g.detalle)}` : k;
-    if(!bloques.has(bk)) bloques.set(bk, { fecha:g.fecha, detalle:g.detalle, filas:[], filasExcel:[] });
-    const b = bloques.get(bk);
-    g.rows.forEach(r => b.filas.push({ ...r, hora:g.hora, progTxt:g.progTxt, programaId:g.programaId }));
-    g.filasExcel.forEach(n => b.filasExcel.push(n));
-  }
-  const items = [];
-  let nroBloque = 0;
-  for(const b of bloques.values()){
-    nroBloque++;
-    const programasBloque = uniq(b.filas.map(f=>f.programaId));
-    const hayVarios = new Set(b.filas.map(f => [impNorm(f.progTxt), impNorm(f.sale), f.hora].join("|"))).size > 1;
-    for(const pid of programasBloque){
-      const r = b.filas.filter(f => f.programaId===pid);
-      const esMicro = x => !x.veh || impNorm(x.veh).includes("micro");
-      const micros = r.filter(esMicro).length;
-      const otros = r.filter(x => !esMicro(x));
-      const horas = uniq(r.map(x=>x.hora)).sort();
-      const partes = [];
-      if(horas.length===1) partes.push(`Salida ${horas[0]}`);
-      else if(horas.length>1) partes.push(`Salida ${horas[0]} a ${horas[horas.length-1]} (según sede)`);
-      const regresos = uniq(r.map(x=>x.regreso));
-      if(regresos.length) partes.push(`Regreso ${regresos.join(" / ")}`);
-      const solics = uniq(r.map(x=>x.solic)); if(solics.length) partes.push(solics.join(" / "));
-      const tels = uniq(r.map(x=>x.tel)); if(tels.length) partes.push(`Cel. ${tels.join(" / ")}`);
-      const pax1 = x => [x.ninos ? `${x.ninos} ${impPlural(+x.ninos,"niño/a","niños/as")}` : "", x.adultos ? `${x.adultos} ${impPlural(+x.adultos,"adulto","adultos")}` : ""].filter(Boolean).join(" y ");
-      const obs = [];
-      uniq(r.map(x=>x.obs)).forEach(o => obs.push(o));
-      const orgDe = x => { const m = pid==="adolescencias" ? x.progTxt.match(/^\s*adolescencias?\s*[-–—]\s*(.+)$/i) : null; return m ? impTexto(m[1]) : ""; };
-      const orgs = uniq(r.map(orgDe));
-      if(hayVarios && r.length>1){
-        // Detalle por sede / institución
-        const porSede = new Map();
-        r.forEach(x => { const k=[orgDe(x), impNorm(x.sale), x.hora].join("|"); if(!porSede.has(k)) porSede.set(k, { org:orgDe(x), sale:x.sale, hora:x.hora, pax:[] }); porSede.get(k).pax.push(pax1(x)); });
-        const lineas = [...porSede.values()].map(v => `${v.org||"—"}${v.sale?` (sale de ${v.sale})`:""}${v.hora?` ${v.hora}`:""}: ${v.pax.length} ${impPlural(v.pax.length,"micro","micros")}${v.pax.filter(Boolean).length?` — ${v.pax.filter(Boolean).join(" | ")}`:""}`);
-        obs.push("Detalle por sede:\n" + lineas.map(l=>"- "+l).join("\n"));
-      } else {
-        const pax = r.map(pax1); const paxUnicos = uniq(pax);
-        if(paxUnicos.length === 1) obs.push((r.length>1 ? "Por micro: " : "Pasajeros: ") + paxUnicos[0]);
-        else if(paxUnicos.length > 1) obs.push("Pasajeros — " + pax.map((p,i)=>p ? `Micro ${i+1}: ${p}` : "").filter(Boolean).join(" | "));
-        const cants = uniq(r.map(x=>x.cant).filter(v => /^\d+$/.test(v)));
-        if(cants.length) obs.push(`Cant. de asistentes (planilla): ${cants.join(" / ")}`);
-      }
-      const conjs = uniq(r.map(x=>x.conj).filter(v => impNorm(v)!=="no"));
-      if(conjs.length) obs.push(`Con otra área: ${conjs.join(" / ")}`);
-      if(programasBloque.length>1) obs.push(`Salida compartida con: ${programasBloque.filter(p=>p!==pid).map(p=>({adolescencias:"Adolescencias",lazos:"Reconstruyendo Lazos",lideres:"Líderes",coopa:"COOPA",bajoflores:"Bajo Flores",turismo:"Turismo Social"}[p]||p)).join(", ")}`);
-      if(otros.length) obs.push(`Otros vehículos: ${uniq(otros.map(x=>x.veh)).join(" / ")} (${otros.length})`);
-      const sedes = uniq(r.map(x=>x.sale));
-      items.push({
-        fecha: b.fecha, horaInicio: horas[0] || "", programaId: pid, programaTexto: uniq(r.map(x=>x.progTxt)).join(" / "),
-        titulo: b.detalle,
-        organizacion: orgs.join(", "),
-        sede: sedes.length>2 ? "Varias sedes (ver observaciones)" : sedes.join(" / "),
-        direcciones: (() => { const d = uniq(r.map(x=>x.destino)); return d.length ? d : [""]; })(),
-        personas: partes.join(" · "),
-        micros: String(micros),
-        observaciones: obs.join(". "),
-        tipoRepeticion: impTipo(b.detalle),
-        bloque: nroBloque, programasBloque,
-        filasExcel: r.map((x,i)=>i), renglones: r.length,
-      });
-    }
-  }
-  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio) || a.programaTexto.localeCompare(b.programaTexto));
-  return { ok:true, filas, items, errores, avisos, formato:"micros" };
-}
-
-const IMP_STOP = new Set(["para","salida","salidas","visita","taller","talleres","institucion","instituciones","adolescentes","adolescente","actividad","evento","jornada","con","del","los","las","una","por","cierre"]);
-function impTokens(t){
-  return new Set(impNorm(t).split(/[^a-z0-9]+/).map(w => (w.length>4 && w.endsWith("s")) ? w.slice(0,-1) : w).filter(w => w.length>=4 && !IMP_STOP.has(w)));
-}
-// ¿Ya hay en la agenda algo igual o muy parecido? Misma fecha + mismo programa + mismo tipo (evento único / jornada normal).
-// Devuelve { motivo, titulo } o null.
-function impBuscarRepetida(it, existentes){
-  const cat = t => (!t || t==="unica") ? "unica" : "normal";
-  const mismoDia = existentes.filter(a => a.fecha===it.fecha && a.programaId===it.programaId && cat(a.tipoRepeticion)===cat(it.tipoRepeticion));
-  if(!mismoDia.length) return null;
-  const nt = impNorm(it.titulo);
-  const tk = impTokens(it.titulo + " " + it.organizacion);
-  const orgC = impNorm(it.organizacion);
-  for(const a of mismoDia){
-    const na = impNorm(a.titulo);
-    if(na===nt) return { motivo:"mismo título", titulo:a.titulo };
-    if(Math.min(na.length, nt.length) >= 8 && (na.includes(nt) || nt.includes(na))) return { motivo:"título parecido", titulo:a.titulo };
-    const oa = impNorm(a.organizacion);
-    if(orgC.length>=4 && oa.length>=4 && (orgC===oa || orgC.includes(oa) || oa.includes(orgC))) return { motivo:"misma institución ese día", titulo:a.titulo };
-    const ta = impTokens(a.titulo + " " + (a.organizacion||""));
-    let comunes = 0; tk.forEach(w => { if(ta.has(w)) comunes++; });
-    const minimo = Math.min(tk.size, ta.size);
-    if(minimo>0 && comunes>=Math.min(2,minimo) && comunes/minimo >= 0.6 && comunes>=2) return { motivo:"título parecido", titulo:a.titulo };
-  }
-  // Mismo horario: en los programas con pocas salidas por día alcanza con eso; en Adolescencias hace falta que coincida algo más (sede / destino / institución).
-  if(it.horaInicio){
-    const ext = impTokens([it.titulo, it.organizacion, it.sede, (it.direcciones||[]).join(" ")].join(" "));
-    for(const a of mismoDia){
-      if((a.horaInicio||"").slice(0,5) !== it.horaInicio) continue;
-      if(it.programaId !== "adolescencias") return { motivo:"mismo día, programa y horario", titulo:a.titulo };
-      const ea = impTokens([a.titulo, a.organizacion, a.sede, (a.direcciones||[]).join(" ")].join(" "));
-      let c = 0; ext.forEach(w => { if(ea.has(w)) c++; });
-      if(c>=1) return { motivo:"mismo horario y misma sede/destino", titulo:a.titulo };
-    }
-  }
-  return null;
-}
-// Aviso (no omite): algo muy parecido cargado en OTRA fecha — puede ser la misma salida con la fecha distinta.
-function impBuscarOtraFecha(it, existentes){
-  const cat = t => (!t || t==="unica") ? "unica" : "normal";
-  if(cat(it.tipoRepeticion)!=="unica") return null;
-  const tk = impTokens(it.titulo + " " + it.organizacion);
-  if(tk.size<2) return null;
-  for(const a of existentes){
-    if(a.fecha===it.fecha || a.programaId!==it.programaId || cat(a.tipoRepeticion)!=="unica") continue;
-    const ta = impTokens(a.titulo + " " + (a.organizacion||""));
-    let c = 0; tk.forEach(w => { if(ta.has(w)) c++; });
-    if(c>=3 || (c>=2 && c/Math.min(tk.size,ta.size) >= 0.75)) return { fecha:a.fecha, titulo:a.titulo };
-  }
-  return null;
-}
-
-/* ---- Formato "agenda" (lo que exporta la propia agenda en Excel / JSON) ---- */
-function impProgramaAgenda(txt){
-  const n = impNorm(txt);
-  if(!n) return null;
-  const p = PROGRAMAS.find(p => impNorm(p.id)===n || impNorm(p.nombre)===n || impNorm(p.corto)===n || impNorm(p.sigla)===n);
-  return p ? p.id : impPrograma(txt);
-}
-const IMP_COLUMNAS_AGENDA = [
-  ["titulo",       n => n==="actividad" || n==="titulo"],
-  ["programa",     n => n.startsWith("programa")],
-  ["organizacion", n => n.startsWith("organizacion")],
-  ["sede",         n => n.startsWith("sede")],
-  ["direcciones",  n => n.startsWith("direccion") || n==="destino"],
-  ["fecha",        n => n==="fecha"],
-  ["horaInicio",   n => n==="hora inicio" || n==="hora de inicio" || n==="hora"],
-  ["horaFin",      n => n==="hora fin" || n==="hora de fin"],
-  ["personas",     n => n.startsWith("responsable") || n==="personas"],
-  ["micros",       n => n==="micros"],
-  ["viandas",      n => n.startsWith("viandas")],
-  ["refrigerios",  n => n.startsWith("refrigerios")],
-  ["estado",       n => n.startsWith("estado")],
-  ["proximoPaso",  n => n.startsWith("proximo paso")],
-  ["observaciones",n => n.startsWith("observaciones")],
-  ["tipo",         n => n==="tipo"],
-  ["suspendida",   n => n.startsWith("suspendid")],
-];
-function impDetectarAgenda(aoa){
-  for(let i=0; i<Math.min(aoa.length, 20); i++){
-    const heads = (aoa[i]||[]).map(impNorm);
-    const usadas = new Set(); const col = {};
-    for(const [k, test] of IMP_COLUMNAS_AGENDA){
-      const j = heads.findIndex((h,idx) => !usadas.has(idx) && h && test(h));
-      if(j>=0){ col[k]=j; usadas.add(j); }
-    }
-    if(col.titulo!==undefined && col.fecha!==undefined && col.programa!==undefined) return { fila:i, col };
-  }
-  return null;
-}
-function impViandasDesdeTexto(t){
-  const out = [];
-  impTexto(t).split(/[;,]/).forEach(par => {
-    const m = par.match(/^\s*(.*?)\s*[:=]\s*(\d+)\s*$/);
-    if(m) out.push({ tipo:m[1], cantidad:m[2] });
-  });
-  return out;
-}
-function impProcesarAgenda(aoa){
-  const enc = impDetectarAgenda(aoa);
-  if(!enc) return { ok:false, error:"No reconozco las columnas. Necesito al menos: Actividad, Programa y Fecha." };
-  const c = enc.col;
-  const get = (row,k) => c[k]===undefined ? "" : row[c[k]];
-  const items = []; const errores = []; let filas = 0;
-  for(let i=enc.fila+1; i<aoa.length; i++){
-    const row = aoa[i] || [];
-    if(!row.some(v => impTexto(v)!=="")) continue;
-    filas++;
-    const titulo = impTexto(get(row,"titulo"));
-    const progTxt = impTexto(get(row,"programa"));
-    const base = { fila:i+1, programa:progTxt, detalle:titulo, fechaTexto:impTexto(get(row,"fecha")) };
-    if(!titulo){ errores.push({...base, motivo:"Falta el nombre de la actividad."}); continue; }
-    const fecha = impFecha(get(row,"fecha"));
-    if(!fecha){ errores.push({...base, motivo:`Fecha inválida o ilegible ("${impTexto(get(row,"fecha"))}").`}); continue; }
-    const programaId = impProgramaAgenda(progTxt);
-    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${progTxt}").`}); continue; }
-    const tipoN = impNorm(get(row,"tipo"));
-    const est = impNorm(get(row,"estado"));
-    const estadoId = (typeof ESTADOS_TRAMITE!=="undefined" ? ESTADOS_TRAMITE.find(e => impNorm(e.label)===est || e.id===est) : null);
-    const dirs = impTexto(get(row,"direcciones")).split(" / ").map(x=>x.trim()).filter(Boolean);
-    items.push({
-      fecha, horaInicio: impHora(get(row,"horaInicio")), horaFin: impHora(get(row,"horaFin")),
-      programaId, programaTexto: progTxt, titulo,
-      organizacion: impTexto(get(row,"organizacion")), sede: impTexto(get(row,"sede")),
-      direcciones: dirs.length ? dirs : [""],
-      personas: impTexto(get(row,"personas")),
-      micros: /^\d+$/.test(impTexto(get(row,"micros"))) ? impTexto(get(row,"micros")) : "",
-      viandasLista: (() => { const v = impViandasDesdeTexto(get(row,"viandas")); return v.length ? v : [{tipo:"",cantidad:""}]; })(),
-      refrigerios: /^\d+$/.test(impTexto(get(row,"refrigerios"))) ? impTexto(get(row,"refrigerios")) : "",
-      tramiteEstado: estadoId ? estadoId.id : null, proximoPaso: impTexto(get(row,"proximoPaso")),
-      observaciones: impTexto(get(row,"observaciones")),
-      tipoRepeticion: (tipoN.startsWith("jornada") || tipoN==="normal") ? "normal" : "unica",
-      suspendida: ["si","sí","x","true","1","suspendida"].includes(impNorm(get(row,"suspendida"))) || impNorm(get(row,"suspendida"))==="si",
-      bloque: items.length+1, programasBloque:[programaId], renglones:1,
-    });
-  }
-  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio));
-  return { ok:true, filas, items, errores, avisos:[], formato:"agenda" };
-}
-function impItemsDesdeJson(data){
-  if(!Array.isArray(data)) return { ok:false, error:"El JSON tiene que ser una lista de actividades." };
-  const items = []; const errores = [];
-  data.forEach((o, i) => {
-    o = o || {};
-    const titulo = impTexto(o.titulo);
-    const base = { fila:i+1, programa:impTexto(o.programaId), detalle:titulo, fechaTexto:impTexto(o.fecha) };
-    if(!titulo){ errores.push({...base, motivo:"Falta el título."}); return; }
-    const fecha = impFecha(o.fecha);
-    if(!fecha){ errores.push({...base, motivo:`Fecha inválida ("${impTexto(o.fecha)}").`}); return; }
-    const programaId = impProgramaAgenda(o.programaId);
-    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${impTexto(o.programaId)}").`}); return; }
-    items.push({
-      ...o, titulo, fecha, programaId, programaTexto:impTexto(o.programaId),
-      horaInicio: o.horaInicio ? impHora(o.horaInicio) : "", horaFin: o.horaFin ? impHora(o.horaFin) : "",
-      organizacion: o.organizacion||"", sede: o.sede||"",
-      direcciones: (Array.isArray(o.direcciones) && o.direcciones.length) ? o.direcciones : [""],
-      personas: o.personas||"", micros: (o.micros!=null && o.micros!=="") ? String(o.micros) : "",
-      observaciones: o.observaciones||"", tipoRepeticion: o.tipoRepeticion || "unica", suspendida: !!o.suspendida,
-      bloque: items.length+1, programasBloque:[programaId], renglones:1,
-    });
-  });
-  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio));
-  return { ok:true, filas:data.length, items, errores, avisos:[], formato:"json" };
-}
-/* IMPEXCEL-PURE-END */
-
-function impLeerLibro(u8){
-  const wb = XLSX.read(u8, { type:"array" });
-  let ultimoError = "El archivo no tiene hojas con datos.";
-  for(const nombre of wb.SheetNames){
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header:1, raw:true, defval:"" });
-    let res = impProcesarFilas(aoa);                 // planilla de Micros
-    if(!res.ok) res = impProcesarAgenda(aoa);        // Excel de la propia agenda
-    if(res.ok){ res.hoja = nombre; return res; }
-    ultimoError = "No reconozco el formato. Puede ser la planilla de Micros (columnas FECHA, PROGR. SOLICITANTE, DETALLE DE LA ACTIVIDAD/EVENTO…) o un Excel exportado desde esta agenda (Actividad, Programa, Fecha…).";
-  }
-  return { ok:false, error: ultimoError };
-}
-
-let impState = null; // { archivo, hoja, formato, filas, items, errores, sel:Set, estado:"vista"|"guardando"|"listo", resultado }
-
-// Un solo botón "Importar": acepta Excel (.xlsx/.xls), CSV y JSON. Siempre muestra vista previa y omite lo ya cargado.
-function importarArchivo(input){
-  const file = input.files && input.files[0];
-  input.value = "";
-  if(!currentUser){ abrirLogin(); return; }
-  if(!modoEditor){ alert("Activá el modo editor (arriba a la derecha) para importar."); return; }
-  if(!file) return;
-  const esJson = /\.json$/i.test(file.name);
-  if(!esJson && typeof XLSX === "undefined"){ alert("No se pudo cargar el lector de Excel. Revisá la conexión a internet y probá de nuevo."); return; }
-  const reader = new FileReader();
-  reader.onload = e => {
-    let res;
-    try{
-      res = esJson ? impItemsDesdeJson(JSON.parse(e.target.result)) : impLeerLibro(new Uint8Array(e.target.result));
-    }catch(err){ console.error(err); alert("No pude leer el archivo. Tiene que ser un Excel (.xlsx / .xls), un CSV o un JSON de la agenda."); return; }
-    if(!res.ok){ alert(res.error); return; }
-    // Marcar las que ya están cargadas en la agenda (igual o parecida: misma fecha + programa)
-    res.items.forEach(it => { const r = impBuscarRepetida(it, actividades); it.yaCargada = !!r; it.repetidaCon = r; it.otraFecha = r ? null : impBuscarOtraFecha(it, actividades); });
-    impState = { archivo:file.name, hoja:res.hoja||"", formato:res.formato, filas:res.filas, items:res.items, errores:res.errores,
-      sel:new Set(res.items.map((it,i)=>i).filter(i=>!res.items[i].yaCargada)), estado:"vista", resultado:"" };
-    modalKind = "importexcel"; modalMode = "form"; modalOpen = true; renderModal();
-  };
-  if(esJson) reader.readAsText(file); else reader.readAsArrayBuffer(file);
-}
-const importExcel = importarArchivo; // compatibilidad con la versión anterior del botón
-
-// Exportar a Excel: un renglón por actividad, con las mismas columnas que acepta "Importar".
-const EXPORT_ENCABEZADOS = ["Actividad","Programa","Organización","Sede","Dirección / Destino","Fecha","Hora inicio","Hora fin","Responsable","Micros","Viandas","Refrigerios","Estado trámite","Próximo paso","Observaciones","Tipo","Suspendida"];
-function exportExcel(){
-  if(typeof XLSX === "undefined"){ alert("No se pudo cargar el generador de Excel. Revisá la conexión a internet o usá el respaldo JSON."); return; }
-  const orden = [...actividades].sort((a,b) => ((a.fecha||"")+(a.horaInicio||"")).localeCompare((b.fecha||"")+(b.horaInicio||"")));
-  const serial = k => { const [y,m,d] = k.split("-").map(Number); return Math.round((Date.UTC(y,m-1,d) - Date.UTC(1899,11,30)) / 86400000); };
-  const filas = orden.map(a => [
-    a.titulo||"", (programaById(a.programaId)||{}).nombre || a.programaId || "", a.organizacion||"", a.sede||"",
-    (a.direcciones||[]).filter(Boolean).join(" / "), a.fecha ? serial(a.fecha) : "", a.horaInicio||"", a.horaFin||"",
-    a.personas||"", a.micros!=="" && a.micros!=null ? Number(a.micros) : "",
-    (a.viandasLista||[]).filter(v=>v.cantidad!=="" && v.cantidad!=null).map(v=>`${v.tipo||"Viandas"}: ${v.cantidad}`).join("; "),
-    a.refrigerios!=="" && a.refrigerios!=null ? Number(a.refrigerios) : "",
-    a.tramiteEstado ? ((estadoById(a.tramiteEstado)||{}).label || a.tramiteEstado) : "", a.proximoPaso||"", a.observaciones||"",
-    categoriaTipo(a.tipoRepeticion)==="normal" ? "Jornada normal" : "Evento único",
-    a.suspendida ? "Sí" : "",
-  ]);
-  const ws = XLSX.utils.aoa_to_sheet([EXPORT_ENCABEZADOS, ...filas]);
-  for(let r=1; r<=filas.length; r++){ const cell = ws[XLSX.utils.encode_cell({r, c:5})]; if(cell && cell.t==="n") cell.z = "dd/mm/yyyy"; }
-  ws["!cols"] = [48,28,26,30,40,12,10,10,40,8,22,12,16,30,60,16,12].map(w => ({wch:w}));
-  ws["!autofilter"] = { ref: XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:filas.length, c:EXPORT_ENCABEZADOS.length-1}}) };
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Agenda");
-  XLSX.writeFile(wb, `agenda-goia-${dateKey(new Date())}.xlsx`);
-}
-function impToggle(i, on){ if(on) impState.sel.add(i); else impState.sel.delete(i); renderModal(); }
-function impToggleTodas(on){
-  impState.sel = on ? new Set(impState.items.map((it,i)=>i).filter(i=>!impState.items[i].yaCargada)) : new Set();
-  renderModal();
-}
-function impCerrar(){ impState = null; cerrarModal(); }
-async function impGuardar(){
-  if(!impState || impState.estado!=="vista") return;
-  const elegidas = impState.items.filter((it,i) => impState.sel.has(i));
-  if(!elegidas.length) return;
-  impState.estado = "guardando"; renderModal();
-  const porBloque = {};
-  elegidas.forEach(it => { porBloque[it.bloque] = (porBloque[it.bloque]||0) + 1; });
-  const grupoDe = {};
-  Object.keys(porBloque).forEach(b => { if(porBloque[b]>1) grupoDe[b] = uidGrupo(); });
-  const rows = elegidas.map(it => ({ ...toRow({...emptyForm(), ...it, tramiteActivo: !!it.tramiteEstado}), ...(grupoDe[it.bloque] ? { grupo_id: grupoDe[it.bloque] } : {}) }));
-  let guardadas = 0;
-  for(let i=0; i<rows.length; i+=100){
-    const { error } = await sb.from("actividades").insert(rows.slice(i, i+100));
-    if(error){
-      console.error(error);
-      impState.estado = "vista";
-      impState.resultado = `Se guardaron ${guardadas} de ${rows.length} y se cortó por un error. Revisá la agenda antes de volver a importar para no duplicar.`;
-      renderModal(); cargarActividades(); return;
-    }
-    guardadas += Math.min(100, rows.length - i);
-  }
-  impState.estado = "listo";
-  impState.resultado = `Listo: se cargaron ${guardadas} actividades.`;
-  renderModal(); cargarActividades();
-}
-function impModalHtml(){
-  const s = impState;
-  const nuevas = s.items.filter(it => !it.yaCargada);
-  const dups = s.items.filter(it => it.yaCargada);
-  const fmt = k => { const [y,m,d] = k.split("-"); return `${d}/${m}/${y}`; };
-  const filaItem = (it, i) => {
-    const p = programaById(it.programaId);
-    return `<tr style="border-top:1px solid var(--line); ${(it.yaCargada && !s.sel.has(i))?'opacity:.55;':''}">
-      <td style="padding:6px 6px;"><input type="checkbox" ${s.sel.has(i)?"checked":""} ${s.estado!=="vista"?"disabled":""} onchange="impToggle(${i}, this.checked)" /></td>
-      <td style="padding:6px; white-space:nowrap;">${fmt(it.fecha)}<br><span style="color:var(--ink-soft);">${escapeHtml(it.horaInicio||"")}</span></td>
-      <td style="padding:6px;"><span style="color:${p.color}; font-weight:700;">${escapeHtml(p.corto)}</span>${it.organizacion?`<br><span style="color:var(--ink-soft);">${escapeHtml(it.organizacion)}</span>`:""}</td>
-      <td style="padding:6px;">${escapeHtml(it.titulo)}<br><span style="color:var(--ink-soft);">${it.tipoRepeticion==="normal"?"Jornada normal":"Evento único"}${it.programasBloque.length>1?" · salida compartida entre "+it.programasBloque.length+" programas":""}</span></td>
-      <td style="padding:6px;">${escapeHtml(it.sede||"")}<br><span style="color:var(--ink-soft);">→ ${escapeHtml((it.direcciones||[]).join(" / "))}</span></td>
-      <td style="padding:6px; text-align:center; font-weight:700;">${escapeHtml(it.micros)}</td>
-      <td style="padding:6px; font-size:11.5px;">${it.yaCargada ? `Ya cargada (${escapeHtml(it.repetidaCon.motivo)}): ${escapeHtml(it.repetidaCon.titulo||"")}` : (it.otraFecha ? `<span style="color:var(--warn); font-weight:600;">⚠️ Parecida en otra fecha (${fmt(it.otraFecha.fecha)}): ${escapeHtml(it.otraFecha.titulo||"")}</span>` : "")}</td>
-    </tr>`;
-  };
-  const TOPE = 400;
-  const idx = s.items.map((it,i)=>i);
-  const aMostrar = idx.filter(i=>!s.items[i].yaCargada).concat(idx.filter(i=>s.items[i].yaCargada)).slice(0, TOPE);
-  const filasHtml = aMostrar.map(i => filaItem(s.items[i], i)).join("") + (s.items.length > TOPE ? `<tr><td colspan="7" style="padding:8px; color:var(--ink-soft);">… y ${s.items.length-TOPE} más (no se muestran, pero se importan igual si están tildadas).</td></tr>` : "");
-  const errHtml = s.errores.length ? `
-    <div style="background:var(--warn-soft); color:var(--warn); border-radius:8px; padding:10px 12px; margin:12px 0; font-size:12.5px;">
-      <b>⚠️ ${s.errores.length} ${impPlural(s.errores.length,"renglón no se importa","renglones no se importan")} (revisar en el Excel):</b>
-      <ul style="margin:6px 0 0 18px; padding:0;">
-        ${s.errores.map(e => `<li>Fila ${e.fila}${e.programa?` · ${escapeHtml(e.programa)}`:""}${e.detalle?` · ${escapeHtml(e.detalle)}`:""} — ${escapeHtml(e.motivo)}</li>`).join("")}
-      </ul>
-    </div>` : "";
-  const nSel = s.sel.size;
-  return `
-    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
-      <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:980px; max-height:90vh; overflow-y:auto;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-          <h2 style="font-size:17px; font-weight:700; margin:0;">${s.formato==="micros" ? "Importar micros desde Excel" : "Importar actividades"}</h2>
-          <button onclick="impCerrar()" style="font-size:18px;">✕</button>
-        </div>
-        <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">${escapeHtml(s.archivo)}${s.hoja ? ` · hoja "${escapeHtml(s.hoja)}"` : ""}</div>
-        <div style="font-size:13.5px; margin-bottom:6px;">
-          Se leyeron <b>${s.filas}</b> ${s.formato==="micros" ? "renglones (un micro por renglón) y quedaron" : impPlural(s.filas,"actividad","actividades")+" y quedaron"} <b>${s.items.length}</b> ${impPlural(s.items.length,"actividad","actividades")}:
-          <b>${nuevas.length}</b> ${impPlural(nuevas.length,"nueva","nuevas")}${dups.length?`, <b>${dups.length}</b> ya estaban cargadas o son parecidas (se omiten; si no es así, tildalas)`:""}${s.errores.length?`, <b>${s.errores.length}</b> con problemas`:""}.
-        </div>
-        ${s.formato==="micros" ? `<div style="font-size:12px; color:var(--ink-soft);">Responsable = horarios + solicitante + celular · Sede = "Sale de" · Dirección = "Destino" · Micros = cantidad de renglones. Podés destildar las que no quieras cargar.</div>` : `<div style="font-size:12px; color:var(--ink-soft);">Podés destildar las que no quieras cargar.</div>`}
-        ${errHtml}
-        <div style="overflow-x:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; max-height:48vh; overflow-y:auto;">
-          <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
-            <thead style="position:sticky; top:0; background:var(--paper);"><tr style="text-align:left;">
-              <th style="padding:6px;"><input type="checkbox" ${nSel===nuevas.length && nuevas.length?"checked":""} ${s.estado!=="vista"?"disabled":""} onchange="impToggleTodas(this.checked)" /></th>
-              <th style="padding:6px;">Fecha</th><th style="padding:6px;">Programa</th><th style="padding:6px;">Actividad</th><th style="padding:6px;">Sede → Dirección</th><th style="padding:6px;">Micros</th><th style="padding:6px;"></th>
-            </tr></thead>
-            <tbody>${filasHtml}</tbody>
-          </table>
-        </div>
-        ${s.resultado ? `<div style="margin-top:12px; font-size:13px; font-weight:600; color:${s.estado==="listo"?"var(--accent)":"var(--warn)"};">${escapeHtml(s.resultado)}</div>` : ""}
-        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-          <button onclick="impCerrar()" style="border:1px solid var(--line); border-radius:8px; padding:9px 18px; font-weight:600; font-size:14px;">${s.estado==="listo"?"Cerrar":"Cancelar"}</button>
-          ${s.estado==="listo" ? "" : `<button onclick="impGuardar()" ${(nSel===0||s.estado!=="vista")?"disabled":""} style="background:var(--accent); color:#fff; border-radius:8px; padding:9px 18px; font-weight:700; font-size:14px; ${(nSel===0||s.estado!=="vista")?'opacity:.5; cursor:default;':''}">${s.estado==="guardando"?"Guardando…":`Importar ${nSel} ${impPlural(nSel,"actividad","actividades")}`}</button>`}
-        </div>
-      </div>
-    </div>`;
-}
-
 /* ===================== Grilla ===================== */
 function buildMonthGrid(year, month){
   const first = new Date(year, month, 1);
@@ -1460,11 +930,10 @@ function render(){
         ` : `
           <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="abrirLogin()">Iniciar sesión</button>
         `}
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportExcel()" title="Descarga todas las actividades en un Excel">Exportar Excel</button>
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportData()" title="Respaldo en formato JSON">Respaldo JSON</button>
-        <label class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; display:inline-flex; align-items:center;" title="Excel (.xlsx), CSV o JSON. Siempre muestra una vista previa y omite lo que ya está cargado.">
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportData()">Exportar</button>
+        <label class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; display:inline-flex; align-items:center;">
           Importar
-          <input type="file" accept=".xlsx,.xls,.csv,.json,application/json" style="display:none;" onchange="importarArchivo(this)" />
+          <input type="file" accept="application/json" style="display:none;" onchange="importData(this)" />
         </label>
       </div>
     </div>
@@ -1561,7 +1030,7 @@ function renderAgenda(consolidado, dias, today){
     <div id="view-body"></div>
     `}
 
-    ${(dataLoaded && actividades.length===0) ? `<div style="margin-top:16px; font-size:13px; color:var(--ink-soft);">Todavía no hay actividades cargadas. Usá "Nueva actividad" para empezar, o "Importar" si ya tenés un Excel o un respaldo.</div>` : ""}
+    ${(dataLoaded && actividades.length===0) ? `<div style="margin-top:16px; font-size:13px; color:var(--ink-soft);">Todavía no hay actividades cargadas. Usá "Nueva actividad" para empezar, o "Importar" si ya tenés un respaldo.</div>` : ""}
     <div style="margin-top:24px; font-size:11px; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:10px;">
       Los datos se guardan en una base compartida: lo que cargue cualquier persona con acceso se ve al instante desde cualquier dispositivo.
     </div>
@@ -1599,8 +1068,7 @@ function renderMes(dias, today){
                   const fondo = colorFondoGrupo(miembros);
                   const idsStr = miembros.map(m=>m.id).join(",");
                   const accion = miembros.length>1 ? `abrirGrupoIds('${idsStr}')` : `abrirEdicion('${a.id}')`;
-                  const susp = miembros.every(m=>m.suspendida);
-                  return `<div onclick="event.stopPropagation(); ${accion}" title="${susp?"[SUSPENDIDA] ":""}${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="${susp?"opacity:.38; outline:1.5px dashed #b3261e; outline-offset:-1px; ":""}width:21px; height:21px; border-radius:5px; background:${fondo}; color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
+                  return `<div onclick="event.stopPropagation(); ${accion}" title="${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="width:21px; height:21px; border-radius:5px; background:${fondo}; color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
                 }).join("")}
                 ${totalChips>6 ? `<div style="width:21px; height:21px; border-radius:5px; background:var(--ink-soft); color:#fff; font-size:8.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${totalChips-6}</div>` : ""}
               </div>
@@ -1665,10 +1133,10 @@ function renderResultadosBusqueda(q){
       </div>
       ${mostrar.length===0 ? `<div style="padding:24px; text-align:center; font-size:13px; color:var(--ink-soft);">No se encontraron actividades.</div>` : mostrar.map(a=>{
         const p = programaById(a.programaId);
-        return `<div onclick="irABusquedaResultado('${a.fecha}')" style="${a.suspendida?"opacity:.45; ":""}display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer;">
+        return `<div onclick="irABusquedaResultado('${a.fecha}')" style="display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer;">
           <span style="width:9px; height:9px; border-radius:50%; background:${p.color}; flex-shrink:0;" title="${p.nombre}"></span>
           <span class="mono" style="font-size:11.5px; color:var(--ink-soft); width:110px; flex-shrink:0;">${a.fecha}${a.horaInicio?` · ${a.horaInicio}`:""}</span>
-          <span style="font-size:13px; font-weight:600; flex:1; min-width:140px;${a.suspendida?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}${a.suspendida?" <b style='color:#b3261e; font-size:10px;'>SUSPENDIDA</b>":""}</span>
+          <span style="font-size:13px; font-weight:600; flex:1; min-width:140px;">${escapeHtml(a.titulo)}</span>
           <span style="font-size:11.5px; color:var(--ink-soft);">${escapeHtml(a.organizacion||"")}</span>
         </div>`;
       }).join("")}
@@ -1678,22 +1146,12 @@ function renderResultadosBusqueda(q){
 
 /* ===================== Mapa GOPIA (navegador) ===================== */
 const MAPA_TEAM = [{"nombre": "Paula Seminare", "rol": "Gerenta Operativa", "resp": "Conduce la Gerencia Operativa GOPIA."}, {"nombre": "Danilo Dignani", "rol": "Abogado", "resp": "Responsabilidad específica todavía no detallada."}, {"nombre": "Santiago Sandoná", "rol": "Asistente administrativo", "resp": "Gestión administrativa general."}, {"nombre": "Adriana Zapata", "rol": "RAP (Responsable Administrativa Presentismo)", "resp": "Todo lo referido a RRHH."}, {"nombre": "Guadalupe Coll", "rol": "RAP (Responsable Administrativa Presentismo)", "resp": "Todo lo referido a RRHH, además del seguimiento de la contratación de micros, pedidos de comida para los programas y solicitudes de piezas de comunicaciones."}, {"nombre": "Ana Prado Morello", "rol": "Asistente administrativa", "resp": "Gestión administrativa general."}];
-const MAPA_PROGRAMAS = {"adolescencias": {"nombre": "Programa Adolescencias", "brief": "El Programa Adolescencia es una iniciativa pensada para estimular las potencialidades y la capacidad creadora de los adolescentes a través de la expresión artística, del acceso a las nuevas tecnologías de información y comunicación como herramienta de integración social, y de la práctica de actividades físicas y deportivas orientadas al desarrollo de la personalidad, el trabajo en equipo y el cuidado de la salud.<br/><br/>Está destinado a adolescentes entre 13 y 18 años que integran hogares en situación de vulnerabilidad social en la Ciudad de Buenos Aires. Se desarrolla a partir de dos ejes fundamentales: los talleres culturales, deportivos y de ciencia y tecnología, y el acompañamiento profesional de los y las adolescentes.", "tiene_organizaciones": true, "gestion": "El programa trabaja de forma integrada con organizaciones sociales territoriales. Esta dinámica funciona en el marco de convenios celebrados que definen los alcances de cada institución, generando espacios de contención, brindando contenidos específicos, acompañamiento y estímulo a la participación.<br/><br/>Cada taller se desarrolla anualmente y es dictado por una tallerista especializada, asistida por una operadora social, quien trabaja en contacto directo y cotidiano con las y los adolescentes, acompaña procesos, sostiene el vínculo y actúa como puente entre la persona, su entorno y las instituciones. Su rol se define por la tarea territorial y de acompañamiento.<br/><br/>El taller está diseñado para que las adolescencias que lo transitan cuenten con un espacio de contención socioeducativa y de desarrollo a través del arte, el deporte, la música y las ciencias y tecnologías.<br/><br/>Cada tallerista y operadora social responde a una supervisora, quien gestiona alrededor de cinco o seis talleres. La supervisora se ocupa de evaluar, coordinar y monitorear el funcionamiento de los proyectos y el desarrollo de los talleres convenidos con las instituciones.<br/><br/>A su vez, se reporta al Coordinador de Supervisores, quien se encarga de planificar, guiar y controlar las actividades que desarrollarán las supervisoras a lo largo del año.<br/><br/>La Coordinadora del Programa, Patricia González Chans, es responsable de la coordinación de los equipos técnicos y del monitoreo de la generación y disponibilidad de los recursos necesarios para el adecuado funcionamiento del equipo y el desarrollo del Programa.", "diagnostico": "Cierre 2026 (Presentación Desafío 2027): 11.600 adolescentes inscriptos, 7.000 cupos disponibles y 4.600 de demanda no cubierta (39,7%).<br/><br/>Hitos: cierre de las clínicas UNTREF el 10 de octubre (entre 500 y 700 adolescentes; taekwondo, vóley, fútbol e IA) y cierre del Programa el 7 de noviembre (14 de noviembre como fecha alternativa en caso de suspensión).<br/><br/>Desafío 2027: ampliar la capacidad del Programa y fortalecer la participación sostenida.<br/><br/><span style=\"font-size:11.5px; font-style:italic;\">Ver también: Red de articulación y Líneas de acción 2027, en Gestiones propias.</span>", "coordinador": "Patricia González Chans"}, "lazos": {"nombre": "Reconstruyendo Lazos", "brief": "Brinda herramientas que el mundo del trabajo requiere, por medio de prácticas socioeducativas laborales y distintas instancias de capacitación, para incrementar las condiciones de empleabilidad de adolescentes y jóvenes. Promueve la inserción laboral en situación de vulnerabilidad social, mediante capacitaciones y prácticas en espacios de trabajo.<br/><br/>Como marca distintiva, cuenta con un dispositivo de acompañamiento que orienta la experiencia de quienes participan. Destinatarios: adolescentes y jóvenes entre 16 y 21 años en situación de vulnerabilidad social de la Ciudad de Buenos Aires.", "tiene_organizaciones": true, "gestion": "Cada espacio de práctica es un tercero (empresa, organismo, espacio cultural) que recibe jóvenes en práctica laboral. El circuito de alta institucional propio de este programa todavía no está confirmado.", "coordinador": "Anabella Divan"}, "lideres": {"nombre": "Líderes Recreativos y Comunitarios", "brief": "Propuesta gratuita de inclusión y capacitación dirigida a adolescentes entre 16 y 18 años de la Ciudad de Buenos Aires, con el objetivo de generar espacios de formación en recreación y liderazgo comunitario que promuevan procesos de participación y autogestión en sus barrios e instituciones. Se desarrolla desde 1998.<br/><br/>El curso tiene una duración de tres años y a lo largo del trayecto se comparten salidas, campamentos y viajes. Es dictado por un equipo docente formado por profesionales de diversas áreas con una larga trayectoria en la coordinación de grupos.", "tiene_organizaciones": false, "gestion": "Funciona en sede fija propia (Escuela García Lorca, los sábados) y hace salidas esporádicas a otros lugares todavía sin detallar.", "diagnostico": "Diagnóstico 2026: en las presentaciones de Desafío 2027 este programa aparece nombrado como \"Recreación Comunitaria\" — es el mismo programa, con un alias informal usado en ese material, no un renombre oficial. El nombre oficial sigue siendo Líderes Recreativos y Comunitarios. 250 adolescentes y jóvenes entre 1er año, 2do año, 3er año y ERA. La falta de presupuesto obligó a readaptar actividades centrales del trayecto formativo y a suspender otras — se trabajó recortando recursos y readaptando propuestas, todas en espacios gratuitos.<br/><br/><b>Hitos 2026:</b><br/>• 1er año — 2 campamentos: el primero realizado en la Escuela García Lorca; el segundo, de noviembre, con lugar todavía pendiente.<br/>• 2do año — campamento readaptado y realizado en la Escuela García Lorca; gira a Mar del Plata/Mar Chiquita sin presupuesto, en proceso de readaptación.<br/>• 3er año — viaje al Tríptico de la Infancia (Rosario) sin presupuesto, en readaptación; campamento con el Programa Juegotecas suspendido por falta de presupuesto; evento \"Conexión sin WiFi\" suspendido por falta de presupuesto.<br/>• ERA — campamento readaptado para realizarse en la Escuela García Lorca; salida al Delta del Tigre suspendida por falta de presupuesto.<br/><br/>Para 2027 se trabaja una <b>Diplomatura con la UNTREF</b> (\"Promotor Integral en Recreación Comunitaria\"), certificada al finalizar el tercer año, con esta estructura: 1er año — Bases (contenidos iniciales de recreación comunitaria); 2do año — Profundización (herramientas de coordinación, planificación y trabajo grupal); 3er año — Integración (consolidación de saberes y experiencia formativa).<br/><br/>Desafío 2027: garantizar las experiencias que forman parte de la propuesta integral del programa.", "coordinador": "Romina Valsecchi"}, "coopa": {"nombre": "COOPA", "brief": "La institución trabaja con adolescentes de 14 a 21 años capacitándolos en distintos oficios (mecánica, herrería, electricidad, computación, diseño gráfico) y desarrollando también actividades recreativas, deportivas y espacios de trabajo en formación laboral, en derechos humanos y en lectura y escritura.<br/><br/><b>Objetivos generales:</b> propiciar un espacio de formación integral para el trabajo donde la formación técnica de los oficios sea a su vez disparador hacia otros conocimientos de disciplinas básicas y de desarrollo de saberes aptitudinales y actitudinales para el desenvolvimiento en el mundo del trabajo. Promover el conocimiento y ejercicio de los derechos humanos y sociales de las/os jóvenes, apuntando a fortalecer su protagonismo, toma de decisiones y reflexión-acción sobre su realidad, en la perspectiva de sujetos de derecho hacia la ciudadanía plena.<br/><br/><b>Enfoque pedagógico-didáctico:</b> la enseñanza tiene como punto de partida la realidad propia, la experiencia y su relación con la teoría y la práctica, combinando el trabajo colectivo con la articulación por áreas. La modalidad de taller/salón permite que circule de manera horizontal y democrática la palabra, construyendo el pensamiento crítico y la identidad de pertenencia.", "tiene_organizaciones": false, "gestion": "Funciona en centros propios del programa, no en organizaciones externas. Uno de esos centros (Barrio Rivadavia I) es además el que usa TABF prestado.", "coordinador": "Daniel Quiroz"}, "bajoflores": {"nombre": "TABF — Talleres Adolescentes del Bajo Flores", "brief": "El Programa Talleres para Adolescentes del Bajo Flores se constituye como una articulación de organizaciones sociales y comunitarias de la zona con el Estado, con el fin de promover espacios educativos con los y las adolescentes.", "tiene_organizaciones": true, "gestion": "No tiene sede propia: usa las instalaciones que le prestan 11 instituciones de la red (comedores, capillas, radio comunitaria, biblioteca, club, escuela y una sede de COOPA).", "coordinador": "Lorena Fernández"}, "turismo": {"nombre": "Turismo Social", "brief": "Sin reseña oficial disponible todavía. Actualmente con poca actividad, según lo indicado.", "tiene_organizaciones": false, "gestion": "Tiene sede propia (Parque Sarmiento, según la nómina de personal), todavía no incorporada a la base a la espera de confirmación. En las presentaciones de Desafío 2027 aparece nombrado como \"Turismo Recreativo\" — es el mismo programa; el nombre oficial sigue siendo Turismo Social.", "coordinador": "Alejandro Agazzi"}};
-const MAPA_GESTIONES_PROGRAMA = {"adolescencias": [{"titulo": "Sistema de control: de la Coordinadora al tallerista", "desc": "De arriba hacia abajo en la cadena de supervisión del Programa.", "sub": [{"titulo": "Coordinadora del Programa — Patricia González Chans", "desc": "Responsable de la coordinación de los equipos técnicos y del monitoreo de la generación y disponibilidad de los recursos necesarios para el adecuado funcionamiento del equipo y el desarrollo del Programa."}, {"titulo": "Coordinador de Supervisores", "desc": "Planifica, guía y controla las actividades que desarrollarán las supervisoras a lo largo del año. Reporta a la Coordinadora del Programa."}, {"titulo": "Supervisora", "desc": "Gestiona alrededor de cinco o seis talleres. Evalúa, coordina y monitorea el funcionamiento de los proyectos y el desarrollo de los talleres convenidos con las instituciones. Reporta al Coordinador de Supervisores."}, {"titulo": "Operadora social", "desc": "Asiste a la tallerista. Trabaja en contacto directo y cotidiano con las y los adolescentes, acompaña procesos, sostiene el vínculo y actúa como puente entre la persona, su entorno y las instituciones. Su rol se define por la tarea territorial y de acompañamiento. Responde a la supervisora."}, {"titulo": "Tallerista", "desc": "Dicta el taller, que se desarrolla anualmente, de forma especializada en su disciplina (arte, deporte, música, ciencias y tecnologías). Último eslabón de la cadena — responde a la supervisora."}]}, {"titulo": "Pago mensual a organizaciones", "desc": "La organización recibe una mensualidad proporcional a la cantidad de talleres y de vacantes existentes."}, {"titulo": "Convenio con UNTREF — clínicas deportivas", "desc": "Consentimiento informado a padres, cronograma, brief por clínica/institución, ejecución, síntesis de participación y cierre."}, {"titulo": "Red de articulación", "desc": "", "sub": [{"titulo": "UNTREF", "desc": "Proyectos presentados, clínicas y cierre del Programa."}, {"titulo": "UBA", "desc": "Articulación institucional."}, {"titulo": "Banco Ciudad", "desc": "Articulación institucional."}, {"titulo": "Clubes (San Lorenzo, Racing, Argentinos Juniors)", "desc": "Alianza deportiva."}, {"titulo": "Radio Mitre", "desc": "Articulación y comunicación."}]}, {"titulo": "Pago de becas", "desc": "Las adolescencias reciben este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno. La beca funciona como una herramienta de política pública destinada a asegurar que las y los jóvenes en situación de vulnerabilidad social puedan afrontar los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo — Programa Adolescencias</b><br/><br/>La inscripción es abierta, libre y gratuita, a través del sistema del Gobierno de la Ciudad.<br/><br/>Una vez cargadas todas las inscripciones, se realiza un proceso de selección que prioriza a las adolescencias con mayor situación de marginalidad y problemática social a la hora de asignar vacante. El programa cuenta con aproximadamente 7.000 vacantes.<br/><br/>Las y los seleccionados se registran en el <b>RIB</b> (sistema interno del Gobierno de la Ciudad), donde el personal administrativo carga los datos de identificación y contacto del adolescente (CUIT, dirección, teléfono, nombre completo, DNI, CUIL) y, cuando corresponde, los mismos datos de su representante.<br/><br/>Los y las adolescentes mayores de 13 años pueden cobrar la beca ellos mismos, mediante un CBU del Banco Ciudad, o a través de un representante legal (tutor/a). Los y las menores de 13 años requieren representante.<br/><br/>Con la información cargada en el RIB, la carga del pago en sí se realiza en el <b>PSOC</b>, otro sistema interno del Gobierno de la Ciudad. Ambos sistemas (RIB y PSOC) dan aviso a Tesorería, que habilita la acreditación del pago."}, {"titulo": "Por expediente (ingreso excepcional)", "desc": "Ingresa por expediente SADE. Se baja el formulario de ingreso (informe gráfico), se pasa a la coordinadora del programa por mail, se carga en un cuadro compartido (contacto con el adolescente, actividad elegida). Se arman los eleves que firma la Gerencia Operativa Legal, se vinculan al expediente y se remite al destinatario que lo envió."}, {"titulo": "Por oficio (pedidos 104 y requerimientos)", "desc": "La Dirección deriva el oficio al programa correspondiente con plazo previo al vencimiento. El programa arma la información, se valida que sea coherente con lo pedido, y se responde por GEDO firmado por la Gerencia Operativa Legal, revisado antes por la abogada de la Dirección General."}, {"titulo": "Derivación al Consejo de Derechos (vulneración de derechos)", "desc": "Ante una vulneración de derechos de un/a adolescente, el programa correspondiente eleva un informe social con los datos completos del adolescente y sus referentes, describiendo la situación que acredita la vulneración.<br/><br/>Se solicita a Mesa de Entradas de la DGPINA la carátula de expediente electrónico. El código de trata tiene dos referencias distintas, según la fuente:<br/>• <b>MDSG0703A</b> — según el mail de la abogada de la Dirección General.<br/>• <b>AJG00101A</b> (\"o similar\") — según el documento interno de circuitos de la Gerencia.<br/><br/>Se vinculan al expediente el informe social y los informes técnicos completos, firmados. El expediente pasa al usuario de Mesa de Entradas y se eleva desde la Gerencia Operativa Legal, dirigido a la Dirección General, que deriva a DGPDES o directamente al Consejo de Derechos de Niñas, Niños y Adolescentes."}, {"titulo": "Líneas de acción 2027", "desc": "Cuatro líneas concretas para pasar de alianzas institucionales a experiencias y oportunidades para los adolescentes.", "sub": [{"titulo": "Adolescencia Te Prepara", "desc": "Primer empleo, educación financiera, orientación vocacional, mentorías, visitas a empresas."}, {"titulo": "Adolescencia Crea", "desc": "Inteligencia artificial, programación, audiovisual, podcast, comunicación, Hackatón Adolescencia."}, {"titulo": "Adolescencia Saludable", "desc": "Nutrición, deporte, hábitos saludables, primeros auxilios, prevención."}, {"titulo": "Adolescencia Conecta", "desc": "Universidades, empresas, medios, clubes profesionales, producción audiovisual, referentes."}]}], "lazos": [{"titulo": "Pago de becas", "desc": "Las adolescencias cobran este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno.<br/><br/>La beca no funciona como un salario ni como un subsidio discrecional, sino como una herramienta de política pública para asegurar que los jóvenes en situación de vulnerabilidad social puedan costear los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo:</b> Un/a adolescente elegible genera expediente, se cruza contra su cuenta bancaria, cambia de estado (elegibilidad, operativa, baja solicitada) y se procesa el pago mensual."}], "lideres": [{"titulo": "Insumos para campamentos", "desc": "Por cada campamento programado: pedido de insumos, compra, depósito y entrega."}, {"titulo": "Alianza con Radio Mitre", "desc": "A partir del taller de radio del programa, los y las jóvenes participan de la organización y producción de la propuesta \"Voces que Inspiran\", en articulación con Radio Mitre."}, {"titulo": "Hitos 2026", "desc": "Readaptaciones y suspensiones por falta de presupuesto, por cohorte.", "sub": [{"titulo": "1er año", "desc": "2 campamentos: el primero realizado en la Escuela García Lorca; el segundo, de noviembre, con lugar todavía pendiente."}, {"titulo": "2do año", "desc": "Campamento readaptado y realizado en la Escuela García Lorca. Gira a Mar del Plata/Mar Chiquita sin presupuesto, en proceso de readaptación."}, {"titulo": "3er año", "desc": "Viaje al Tríptico de la Infancia (Rosario) sin presupuesto, en readaptación. Campamento con el Programa Juegotecas suspendido por falta de presupuesto. Evento \"Conexión sin WiFi\" suspendido por falta de presupuesto."}, {"titulo": "ERA", "desc": "Campamento readaptado para realizarse en la Escuela García Lorca. Salida al Delta del Tigre suspendida por falta de presupuesto."}]}], "coopa": [], "bajoflores": [], "turismo": []};
-const MAPA_GESTIONES_GENERALES = [{"id": "conv", "titulo": "Convenios y organizaciones", "desc": "La articulación con las organizaciones sociales se concreta a través de un Convenio. El ingreso de la propuesta se genera a través de un expediente, donde se envía a la DGTAL para la conformación del marco jurídico correspondiente. Posteriormente se remite a la firma del Ministerio de Desarrollo Humano y Hábitat (MDHyH). Una vez firmado, se procede al pago.<br/><br/><b>¿Por qué se trabaja con organizaciones sociales?</b><br/><br/><b>Democracia participativa y cogestión.</b> La Constitución de la CABA establece que la democracia de la Ciudad tiene carácter participativo. Los considerandos de los convenios recuperan este mandato: incorporar a las OSC permite un diseño de políticas públicas más democrático, plural y cercano a las necesidades reales del vecino.<br/><br/><b>Capilaridad territorial y especialización técnica.</b> Las organizaciones sociales poseen un \"saber hacer\" y un arraigo territorial que el aparato estatal no siempre logra de forma inmediata. El Estado firma convenios para potenciar y articular esas capacidades técnicas, descentralizando la ejecución de programas para llegar de forma más rápida y empática a la población vulnerable.<br/><br/><b>Corresponsabilidad en la protección de derechos.</b> En niñez y adolescencia (ámbito de la DGPINA), la Ley N.° 114 derriba el viejo modelo de patronato e instaura el principio de corresponsabilidad: la protección integral de derechos no es tarea exclusiva del sector público, sino una responsabilidad compartida entre el Estado, las familias y las organizaciones de la comunidad.<br/><br/><b>Marco jurídico estructurado</b><br/><pre class=\"mono\" style=\"font-size:11px; line-height:1.4; white-space:pre; overflow-x:auto; background:#fff; border-radius:6px; padding:10px; color:var(--ink);\">┌─────────────────────────────────────────┐\n│          Constitución de la CABA        │\n│   (Arts. 11, 32 y 39 - Participación)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│        Leyes de Fondo (CABA)            │\n│  - Ley N.° 114 (Protección Integral)    │\n│  - Ley N.° 6.684 (Ley de Ministerios)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│         Decretos y Resoluciones         │\n│  - Decreto N.° 1360/07 (Convenio Marco) │\n│  - Res. N.° 97/SECLYT/25 (Circuito)     │\n└─────────────────────────────────────────┘</pre><br/><b>Nivel constitucional:</b> la Constitución de la CABA obliga al Estado a garantizar canales de participación ciudadana y a fomentar las actividades de las entidades comunitarias sin fines de lucro.<br/><br/><b>Nivel legal de competencia:</b> la Ley N.° 6.684 encomienda al Ministerio de Desarrollo Humano y Hábitat la articulación de sus políticas con actores privados y del tercer sector. La Ley N.° 114 da el marco protectorio específico para que la DGPINA delegue o complemente la atención de adolescentes mediante estos instrumentos institucionales.<br/><br/><b>Nivel operativo y procedimental:</b> el Decreto N.° 1360/07 unifica las reglas mediante el \"Modelo de Convenio Marco de Cooperación\", resguardando la autonomía jurídica y técnica de la organización frente al Estado. La Resolución N.° 97/SECLYT/25 garantiza la transparencia del circuito digital, exigiendo dictámenes legales antes de que los fondos públicos sean girados.<br/><br/><span style=\"font-size:11px; color:var(--ink-soft);\">Fuentes: Constitución de la CABA · Ley N.° 114 · Ley N.° 6.684 · Decreto N.° 1360/07 · Resolución N.° 97/SECLYT/25 · documentosboletinoficial.buenosaires.gob.ar · mpfciudad.gob.ar</span<br/><br/><b>Marco jurídico estructurado</b><br/><pre class=\"mono\" style=\"font-size:11px; line-height:1.4; white-space:pre; overflow-x:auto; background:#fff; border-radius:6px; padding:10px; color:var(--ink);\">┌─────────────────────────────────────────┐\n│          Constitución de la CABA        │\n│   (Arts. 11, 32 y 39 - Participación)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│        Leyes de Fondo (CABA)            │\n│  - Ley N.° 114 (Protección Integral)    │\n│  - Ley N.° 6.684 (Ley de Ministerios)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│         Decretos y Resoluciones         │\n│  - Decreto N.° 1360/07 (Convenio Marco) │\n│  - Res. N.° 97/SECLYT/25 (Circuito)     │\n└─────────────────────────────────────────┘</pre><br/><b>Nivel constitucional:</b> la Constitución de la CABA obliga al Estado a garantizar canales de participación ciudadana y a fomentar las actividades de las entidades comunitarias sin fines de lucro.<br/><br/><b>Nivel legal de competencia:</b> la Ley N.° 6.684 encomienda al Ministerio de Desarrollo Humano y Hábitat la articulación de sus políticas con actores privados y del tercer sector. La Ley N.° 114 da el marco protectorio específico para que la DGPINA delegue o complemente la atención de adolescentes mediante estos instrumentos institucionales.<br/><br/><b>Nivel operativo y procedimental:</b> el Decreto N.° 1360/07 unifica las reglas mediante el \"Modelo de Convenio Marco de Cooperación\", resguardando la autonomía jurídica y técnica de la organización frente al Estado. La Resolución N.° 97/SECLYT/25 garantiza la transparencia del circuito digital, exigiendo dictámenes legales antes de que los fondos públicos sean girados.<br/><br/><span style=\"font-size:11px; color:var(--ink-soft);\">Fuentes: Constitución de la CABA · Ley N.° 114 · Ley N.° 6.684 · Decreto N.° 1360/07 · Resolución N.° 97/SECLYT/25 · documentosboletinoficial.buenosaires.gob.ar · mpfciudad.gob.ar</span>", "sub": [{"titulo": "Democracia participativa y cogestión", "desc": "La Constitución de la CABA establece que la democracia de la Ciudad tiene carácter participativo. Los considerandos de los convenios recuperan este mandato: incorporar a las OSC permite un diseño de políticas públicas más democrático, plural y cercano a las necesidades reales del vecino."}, {"titulo": "Capilaridad territorial y especialización técnica", "desc": "Las organizaciones sociales poseen un \"saber hacer\" y un arraigo territorial que el aparato estatal no siempre logra de forma inmediata. El Estado firma convenios para potenciar y articular esas capacidades técnicas, descentralizando la ejecución de programas para llegar de forma más rápida y empática a la población vulnerable."}, {"titulo": "Corresponsabilidad en la protección de derechos", "desc": "En niñez y adolescencia (ámbito de la DGPINA), la Ley N.° 114 derriba el viejo modelo de patronato e instaura el principio de corresponsabilidad: la protección integral de derechos no es tarea exclusiva del sector público, sino una responsabilidad compartida entre el Estado, las familias y las organizaciones de la comunidad."}]}, {"id": "vpn", "titulo": "Accesos VPN", "desc": "<b>Por qué es obligatoria</b> — la VPN es el único puente técnico para acceder al Sistema de Administración de Documentos Electrónicos (SADE), canal obligatorio para tramitar expedientes, rendiciones y gestiones estatales (Decreto N° 589/09). Para los talleres y organizaciones que reciben apoyo económico, también es indispensable para acceder a los módulos de Planes Sociales y Subsidios (PSOCS) y al Registro de Identificación de Beneficiarios (RIB), exigido por la Resolución N° 557/SLYT/15 para fiscalizar y transparentar las prestaciones otorgadas por la Ciudad. La Agencia de Sistemas de Información (ASI) exige conexiones cifradas y validación nominal por CUIL para proteger los datos sensibles de los beneficiarios.", "sub": [{"titulo": "Circuito — pedido nuevo", "desc": "Programa Adolescencias envía por mail a RRHH: formulario, copia de convenio y copia de DNI → RRHH corrobora que el usuario corresponda a su cargo u oficio (control de personal), emite el ticket, y avisa a la coordinadora del Programa y a la ASI que está habilitado para continuar → la ASI deriva internamente a GoDi (sector propio dentro de la ASI) → GoDi habilita a cada usuario en el sistema de Carga de Asistencia y Acompañamiento del Programa Adolescencias → se entrega el acceso al Programa."}, {"titulo": "Circuito — prórroga", "desc": "Mismo ingreso por mail a RRHH (formulario, convenio, DNI) → RRHH corrobora y emite el ticket, avisa a la coordinadora y a la ASI → como el sistema ya está habilitado, la ASI extiende la vigencia 365 días más, sin derivar a GoDi → avisa al Programa, que confirma la prórroga. <span style=\"font-size:11.5px; color:var(--warn);\">⚠ Documento marcado como BORRADOR por el propio equipo: este paso de la ASI está señalado ahí mismo como inferencia, pendiente de confirmar.</span>"}]}, {"id": "log", "titulo": "Logística de actividades y comunicación", "desc": "Cada programa calendariza el mes. De cada actividad sale un Brief que documenta la actividad que se realizará, la fecha, el lugar, el horario, la cantidad de participantes, responsables y acompañantes, los micros en caso de requerir y la solicitud de comida (menú festivo, refrigerios, viandas). También se gestionan acá las solicitudes de piezas de comunicación (diplomas, folletos, afiches) por Google Form. Guadalupe Coll (RAP) hace el seguimiento de estas tres gestiones. El destino final de las solicitudes, una vez enviadas, no está documentado todavía."}, {"id": "aud", "titulo": "Auditorías", "desc": "En construcción."}, {"id": "diag", "titulo": "Diagnóstico de gestión 2026", "desc": "<b>Marzo (punto de partida):</b> presupuesto y pautas definidos con demora; inicio de talleres postergado y asignaciones a rehacer; documentación y registros descentralizados, con informalidad de información; asistencias incompletas y débil trazabilidad; equipo en proceso de reorganización.<br/><br/><b>Marzo–septiembre (respuesta de gestión):</b> acuerdo del 6% y reasignación de talleres; regularización de convenios, pagos, RIB y PSOC; ordenamiento documental y seguimiento de asistencias; clínicas deportivas, IA y mediciones antropométricas; replanificación de programas y presencia territorial.<br/><br/><b>Hoy — avances y próximos desafíos:</b> seis programas sostenidos; mayor control y trazabilidad de la información (falta mucho todavía); procesos internos más claros y ordenados; consolidar el equipo y el sistema de monitoreo; contar con presupuesto, circuitos y recursos anticipados.<br/><br/><b>Balance:</b> la Gerencia avanzó en ordenar y sostener la ejecución. El próximo salto requiere previsibilidad institucional — presupuesto oportuno, circuitos definidos y disponibilidad de recursos operativos.<br/><br/><b>Decisión 2027 por programa</b> (sostener / fortalecer / reformular), evaluada según tres preguntas: Impacto (¿a quiénes llegamos y qué oportunidades generamos?), Demanda (¿la necesidad que dio origen al programa sigue vigente?) y Gestión (¿qué debemos sostener, fortalecer o reformular?)."}];
+const MAPA_PROGRAMAS = {"adolescencias": {"nombre": "Programa Adolescencias", "brief": "El Programa Adolescencia es una iniciativa pensada para estimular las potencialidades y la capacidad creadora de los adolescentes a través de la expresión artística, del acceso a las nuevas tecnologías de información y comunicación como herramienta de integración social, y de la práctica de actividades físicas y deportivas orientadas al desarrollo de la personalidad, el trabajo en equipo y el cuidado de la salud.<br/><br/>Está destinado a adolescentes entre 13 y 18 años que integran hogares en situación de vulnerabilidad social en la Ciudad de Buenos Aires. Se desarrolla a partir de dos ejes fundamentales: los talleres culturales, deportivos y de ciencia y tecnología, y el acompañamiento profesional de los y las adolescentes.", "tiene_organizaciones": true, "gestion": "El programa trabaja de forma integrada con organizaciones sociales territoriales. Esta dinámica funciona en el marco de convenios celebrados que definen los alcances de cada institución, generando espacios de contención, brindando contenidos específicos, acompañamiento y estímulo a la participación.<br/><br/>Cada taller se desarrolla anualmente y es dictado por una tallerista especializada, asistida por una operadora social, quien trabaja en contacto directo y cotidiano con las y los adolescentes, acompaña procesos, sostiene el vínculo y actúa como puente entre la persona, su entorno y las instituciones. Su rol se define por la tarea territorial y de acompañamiento. Tanto la tallerista como la operadora social integran el Programa, pero pertenecen formalmente a la organización conveniada, no a la planta del equipo técnico de la Gerencia.<br/><br/>El taller está diseñado para que las adolescencias que lo transitan cuenten con un espacio de contención socioeducativa y de desarrollo a través del arte, el deporte, la música y las ciencias y tecnologías.<br/><br/>El equipo técnico del Programa se organiza en tres niveles: la Coordinadora del Programa, la Sub Coordinación (cinco personas, cada una a cargo de un equipo) y los equipos territoriales que de ellas dependen. El detalle completo está en Gestiones propias — Sistema de control y Equipo — Sub Coordinaciones.<br/><br/>La Coordinadora del Programa, Patricia González Chans, es responsable de la coordinación de los equipos técnicos y del monitoreo de la generación y disponibilidad de los recursos necesarios para el adecuado funcionamiento del equipo y el desarrollo del Programa.", "diagnostico": "Cierre 2026 (Presentación Desafío 2027): 11.600 adolescentes inscriptos, 7.000 cupos disponibles y 4.600 de demanda no cubierta (39,7%).<br/><br/>Hitos: cierre de las clínicas UNTREF el 10 de octubre (entre 500 y 700 adolescentes; taekwondo, vóley, fútbol e IA) y cierre del Programa el 7 de noviembre (14 de noviembre como fecha alternativa en caso de suspensión).<br/><br/>Desafío 2027: ampliar la capacidad del Programa y fortalecer la participación sostenida.<br/><br/><span style=\"font-size:11.5px; font-style:italic;\">Ver también: Red de articulación y Líneas de acción 2027, en Gestiones propias.</span>", "coordinador": "Patricia González Chans"}, "lazos": {"nombre": "Reconstruyendo Lazos", "brief": "Brinda herramientas que el mundo del trabajo requiere, por medio de prácticas socioeducativas laborales y distintas instancias de capacitación, para incrementar las condiciones de empleabilidad de adolescentes y jóvenes. Promueve la inserción laboral en situación de vulnerabilidad social, mediante capacitaciones y prácticas en espacios de trabajo.<br/><br/>Como marca distintiva, cuenta con un dispositivo de acompañamiento que orienta la experiencia de quienes participan. Destinatarios: adolescentes y jóvenes entre 16 y 21 años en situación de vulnerabilidad social de la Ciudad de Buenos Aires.", "tiene_organizaciones": true, "gestion": "Cada espacio de práctica es un tercero (empresa, organismo, espacio cultural) que recibe jóvenes en práctica laboral. El circuito de alta institucional propio de este programa todavía no está confirmado.", "coordinador": "Anabella Divan"}, "lideres": {"nombre": "Líderes Recreativos y Comunitarios", "brief": "Propuesta gratuita de inclusión y capacitación dirigida a adolescentes entre 16 y 18 años de la Ciudad de Buenos Aires, con el objetivo de generar espacios de formación en recreación y liderazgo comunitario que promuevan procesos de participación y autogestión en sus barrios e instituciones. Se desarrolla desde 1998.<br/><br/>El curso tiene una duración de tres años y a lo largo del trayecto se comparten salidas, campamentos y viajes. Es dictado por un equipo docente formado por profesionales de diversas áreas con una larga trayectoria en la coordinación de grupos.", "tiene_organizaciones": false, "gestion": "Funciona en sede fija propia (Escuela García Lorca, los sábados) y hace salidas esporádicas a otros lugares todavía sin detallar.", "diagnostico": "Diagnóstico 2026: en las presentaciones de Desafío 2027 este programa aparece nombrado como \"Recreación Comunitaria\" — es el mismo programa, con un alias informal usado en ese material, no un renombre oficial. El nombre oficial sigue siendo Líderes Recreativos y Comunitarios. 250 adolescentes y jóvenes entre 1er año, 2do año, 3er año y ERA. La falta de presupuesto obligó a readaptar actividades centrales del trayecto formativo y a suspender otras — se trabajó recortando recursos y readaptando propuestas, todas en espacios gratuitos.<br/><br/><b>Hitos 2026:</b><br/>• 1er año — 2 campamentos: el primero realizado en la Escuela García Lorca; el segundo, de noviembre, con lugar todavía pendiente.<br/>• 2do año — campamento readaptado y realizado en la Escuela García Lorca; gira a Mar del Plata/Mar Chiquita sin presupuesto, en proceso de readaptación.<br/>• 3er año — viaje al Tríptico de la Infancia (Rosario) sin presupuesto, en readaptación; campamento con el Programa Juegotecas suspendido por falta de presupuesto; evento \"Conexión sin WiFi\" suspendido por falta de presupuesto.<br/>• ERA — campamento readaptado para realizarse en la Escuela García Lorca; salida al Delta del Tigre suspendida por falta de presupuesto.<br/><br/>Para 2027 se trabaja una <b>Diplomatura con la UNTREF</b> (\"Promotor Integral en Recreación Comunitaria\"), certificada al finalizar el tercer año, con esta estructura: 1er año — Bases (contenidos iniciales de recreación comunitaria); 2do año — Profundización (herramientas de coordinación, planificación y trabajo grupal); 3er año — Integración (consolidación de saberes y experiencia formativa).<br/><br/>Desafío 2027: garantizar las experiencias que forman parte de la propuesta integral del programa.", "coordinador": "Romina Valsecchi"}, "coopa": {"nombre": "COOPA", "brief": "La institución trabaja con adolescentes de 14 a 21 años capacitándolos en distintos oficios (mecánica, herrería, electricidad, computación, diseño gráfico) y desarrollando también actividades recreativas, deportivas y espacios de trabajo en formación laboral, en derechos humanos y en lectura y escritura.<br/><br/><b>Objetivos generales:</b> propiciar un espacio de formación integral para el trabajo donde la formación técnica de los oficios sea a su vez disparador hacia otros conocimientos de disciplinas básicas y de desarrollo de saberes aptitudinales y actitudinales para el desenvolvimiento en el mundo del trabajo. Promover el conocimiento y ejercicio de los derechos humanos y sociales de las/os jóvenes, apuntando a fortalecer su protagonismo, toma de decisiones y reflexión-acción sobre su realidad, en la perspectiva de sujetos de derecho hacia la ciudadanía plena.<br/><br/><b>Enfoque pedagógico-didáctico:</b> la enseñanza tiene como punto de partida la realidad propia, la experiencia y su relación con la teoría y la práctica, combinando el trabajo colectivo con la articulación por áreas. La modalidad de taller/salón permite que circule de manera horizontal y democrática la palabra, construyendo el pensamiento crítico y la identidad de pertenencia.", "tiene_organizaciones": false, "gestion": "Funciona en centros propios del programa, no en organizaciones externas. Uno de esos centros (Barrio Rivadavia I) es además el que usa TABF prestado.", "coordinador": "Daniel Quiroz"}, "bajoflores": {"nombre": "TABF — Talleres Adolescentes del Bajo Flores", "brief": "El Programa Talleres para Adolescentes del Bajo Flores se constituye como una articulación de organizaciones sociales y comunitarias de la zona con el Estado, con el fin de promover espacios educativos con los y las adolescentes.", "tiene_organizaciones": true, "gestion": "No tiene sede propia: usa las instalaciones que le prestan 11 instituciones de la red (comedores, capillas, radio comunitaria, biblioteca, club, escuela y una sede de COOPA).", "coordinador": "Lorena Fernández"}, "turismo": {"nombre": "Turismo Social", "brief": "Sin reseña oficial disponible todavía. Actualmente con poca actividad, según lo indicado.", "tiene_organizaciones": false, "gestion": "Tiene sede propia (Parque Sarmiento, según la nómina de personal), todavía no incorporada a la base a la espera de confirmación. En las presentaciones de Desafío 2027 aparece nombrado como \"Turismo Recreativo\" — es el mismo programa; el nombre oficial sigue siendo Turismo Social.", "coordinador": "Alejandro Agazzi"}};
+const MAPA_GESTIONES_PROGRAMA = {"adolescencias": [{"titulo": "Sistema de control: de la Coordinadora al equipo territorial", "desc": "Tres niveles de conducción técnica del Programa.", "sub": [{"titulo": "Coordinadora del Programa — Patricia González Chans", "desc": "Responsable de la coordinación de los equipos técnicos y del monitoreo de la generación y disponibilidad de los recursos necesarios para el adecuado funcionamiento del equipo y el desarrollo del Programa."}, {"titulo": "Sub Coordinación", "desc": "Nivel intermedio entre la Coordinadora del Programa y los equipos territoriales. Son cinco personas, cada una a cargo de un equipo. Planifican, guían y controlan las actividades que se desarrollan a lo largo del año, y reportan a la Coordinadora del Programa. El detalle de cada Sub Coordinación y su equipo está en Equipo — Sub Coordinaciones, más abajo."}, {"titulo": "Equipo territorial — talleristas y operadoras/es sociales", "desc": "Dictan los talleres y acompañan a las y los adolescentes en el territorio. Responden a la Sub Coordinación. Si bien integran el Programa, pertenecen formalmente a la organización conveniada, no a la planta del equipo técnico de la Gerencia."}]}, {"titulo": "Equipo — Sub Coordinaciones de supervisión", "desc": "Cinco Sub Coordinaciones, cada una con su propio equipo. Reportan directamente a la Coordinadora del Programa.", "sub": [{"titulo": "Sub Coordinación — Analía Mauvezin", "desc": "Equipo: Nahuel Bernardez, Noelia Miceli, Laura Santambrogio, Sonia Inés Padro, Javier Lazarte."}, {"titulo": "Sub Coordinación — Analía Dillman", "desc": "Equipo: Damián Rico, Gonzalo Sarrais, Omar Mendoza, Mariana Cruz, Vacante, Vacante."}, {"titulo": "Sub Coordinación — Sofía Zukerfeld", "desc": "Equipo: Elisa Ordiozola, Analía Maldones, Silvina Sanseverino, Andrea Giussanni, Diego Couzo, Vacante."}, {"titulo": "Sub Coordinación — Carla Chapato", "desc": "Equipo: Marcela Avezzano, Carolina Vazquez, Celeste Farbman (licencia por maternidad), Silvina Alonso (licencia por maternidad), Vacante, Vacante."}, {"titulo": "Sub Coordinación — M. Eugenia García", "desc": "Equipo: Cyntia Tonelli, Virginia Domínguez, Ale Rost, Elena Montaldo, Ivanna Palma, Vacante."}]}, {"titulo": "Equipo — Área Apoyo y Administrativos del Programa", "desc": "Dos grupos de personal del Programa, además de la línea de Coordinación y Sub Coordinación.", "sub": [{"titulo": "Área Apoyo", "desc": "María del Mar Pardoa Puigdomenech, Roberto Osvaldo Fabbricatore, Melisa Mónica Marino, Federico Pereyra."}, {"titulo": "Administrativos", "desc": "Víctor González, Vacante, Vacante."}]}, {"titulo": "Circuito de documentación y convenios", "desc": "Mediados de febrero: Pablo Riveli envía a las organizaciones el listado completo de la documentación necesaria para renovar el convenio.<br/><br/>Las organizaciones presentan la documentación — gran parte debe renovarse o actualizarse cada año. El tiempo de entrega depende de cada una; se estima en hasta 15 días.<br/><br/>Primeros días de marzo: el Programa envía el presupuesto a las organizaciones y les solicita el proyecto anual y la fecha de inicio de las actividades, que luego se informa a las y los adolescentes en la confirmación de vacantes.<br/><br/>El Programa recibe y evalúa los proyectos presentados.<br/><br/>Los proyectos evaluados se envían a Pablo Riveli para integrarlos al legajo de cada organización.<br/><br/>Con la documentación completa y el proyecto evaluado, la organización queda en condiciones de firmar el convenio — hacia mediados de marzo, si no hay inconvenientes.<br/><br/><span style=\"font-size:11.5px; font-style:italic;\">Complementa, con el detalle específico de este programa, el circuito general de Convenios y organizaciones de la Gerencia.</span>"}, {"titulo": "Circuito de supervisión e informes", "desc": "Cada integrante del equipo de supervisión tiene asignados aproximadamente 12 talleres, en dos instituciones y, como máximo, tres. La frecuencia de visita es semanal por institución y quincenal por taller, alternando las actividades visitadas.<br/><br/>La asistencia de las y los adolescentes la registran operadores/as sociales o referentes institucionales. Hoy está repartida entre el sistema (instituciones que ya cuentan con VPN y capacitación) y planillas Excel (el resto, hasta completar ese proceso) — ver Accesos VPN, en los trámites de la Gerencia.<br/><br/>En cada visita se registra además la cantidad de participantes y se realiza una evaluación cualitativa: dinámica y participación grupal e individual, vínculo de operadores/as y docentes con las y los adolescentes, propuesta pedagógica, seguimientos sociales y capacidad de la coordinación institucional.<br/><br/>Cada visita genera un informe de supervisión. Además hay tres informes periódicos al año: fines de julio, fines de octubre, y entre el 15 y el 20 de diciembre (al cierre del convenio). Se reúnen en una carpeta de Drive de la Gerencia y el Programa; el formato común todavía está en construcción.<br/><br/>Cuando una situación requiere la intervención del Consejo de los Derechos de Niñas, Niños y Adolescentes u otro efector, se articula entre los equipos: reuniones, intercambio de información e informes, derivaciones y acuerdos de intervención — ver también Derivación al Consejo de Derechos, más abajo, para el circuito formal con expediente."}, {"titulo": "Circuito de inscripciones", "desc": "El circuito comienza con dos procesos en paralelo: la evaluación del índice de vulnerabilidad y el acondicionamiento del sistema, en articulación con GODI (Gerencia Operativa de Desarrollo Informático del GCBA), y la construcción de la oferta de actividades junto con las instituciones.<br/><br/>Primeros días de diciembre: las instituciones presentan la oferta acordada, que se carga y controla en el sistema.<br/><br/>Desde el 2 de enero y durante enero y febrero: preinscripción abierta — requiere el sistema acondicionado; en algunos años las dificultades del sistema obligaron a reducir el período.<br/><br/>Del 1 al 15 de marzo: procesamiento de datos y ranking por índice de vulnerabilidad.<br/><br/>Desde el 15 de marzo: confirmación de vacantes, que requiere las fechas de inicio informadas por las organizaciones — este punto suele estar condicionado por la definición y aceptación del presupuesto.<br/><br/>Existe una base de datos por organización, actividad/disciplina y edad, que lleva Bernardo."}, {"titulo": "Circuito de pagos", "desc": "", "sub": [{"titulo": "A las y los adolescentes (becas)", "desc": "Las adolescencias reciben este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno. La beca funciona como una herramienta de política pública destinada a asegurar que las y los jóvenes en situación de vulnerabilidad social puedan afrontar los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo — Programa Adolescencias</b><br/><br/>La inscripción es abierta, libre y gratuita, a través del sistema del Gobierno de la Ciudad.<br/><br/>Una vez cargadas todas las inscripciones, se realiza un proceso de selección que prioriza a las adolescencias con mayor situación de marginalidad y problemática social a la hora de asignar vacante. El programa cuenta con aproximadamente 7.000 vacantes.<br/><br/>Las y los seleccionados se registran en el <b>RIB</b> (sistema interno del Gobierno de la Ciudad), donde el personal administrativo carga los datos de identificación y contacto del adolescente (CUIT, dirección, teléfono, nombre completo, DNI, CUIL) y, cuando corresponde, los mismos datos de su representante.<br/><br/>Los y las adolescentes mayores de 13 años pueden cobrar la beca ellos mismos, mediante un CBU del Banco Ciudad, o a través de un representante legal (tutor/a). Los y las menores de 13 años requieren representante.<br/><br/>Con la información cargada en el RIB, la carga del pago en sí se realiza en el <b>PSOC</b>, otro sistema interno del Gobierno de la Ciudad. Ambos sistemas (RIB y PSOC) dan aviso a Tesorería, que habilita la acreditación del pago."}, {"titulo": "A las organizaciones", "desc": "Durante 2025 y 2026 la modalidad vigente es el pago a cupo total: el cupo de vacantes de cada categoría establecida en el convenio, multiplicado por el valor correspondiente a cada categoría. El equipo del Programa no genera mensualmente un nuevo cálculo o reporte; el proceso tiene varias fases manuales a cargo de la Dirección General: recepción de la copia de la factura mensual, elaboración de la rendición, armado del informe anexo con los montos a pagar, elevación a la firma de la Directora General, y armado de cada disposición de pago por organización.<br/><br/>Una vez determinado el monto, se ejecuta el pago y la organización recibe un número de DGT junto con la solicitud de facturación. La organización emite la factura, la carga en el sistema con ese número de DGT y la envía al área contable de la Dirección General, que completa la instancia para la transferencia.<br/><br/>Información pendiente de incorporar, según el propio diagnóstico del Programa: los montos efectivamente pagados por organización y el promedio por ONG."}]}, {"titulo": "Convenio con UNTREF — clínicas deportivas", "desc": "Consentimiento informado a padres, cronograma, brief por clínica/institución, ejecución, síntesis de participación y cierre."}, {"titulo": "Red de articulación", "desc": "", "sub": [{"titulo": "UNTREF", "desc": "Proyectos presentados, clínicas y cierre del Programa."}, {"titulo": "UBA", "desc": "Articulación institucional."}, {"titulo": "Banco Ciudad", "desc": "Articulación institucional."}, {"titulo": "Clubes (San Lorenzo, Racing, Argentinos Juniors)", "desc": "Alianza deportiva."}, {"titulo": "Radio Mitre", "desc": "Articulación y comunicación."}]}, {"titulo": "Por expediente (ingreso excepcional)", "desc": "Ingresa por expediente SADE. Se baja el formulario de ingreso (informe gráfico), se pasa a la coordinadora del programa por mail, se carga en un cuadro compartido (contacto con el adolescente, actividad elegida). Se arman los eleves que firma la Gerencia Operativa Legal, se vinculan al expediente y se remite al destinatario que lo envió."}, {"titulo": "Por oficio (pedidos 104 y requerimientos)", "desc": "La Dirección deriva el oficio al programa correspondiente con plazo previo al vencimiento. El programa arma la información, se valida que sea coherente con lo pedido, y se responde por GEDO firmado por la Gerencia Operativa Legal, revisado antes por la abogada de la Dirección General."}, {"titulo": "Derivación al Consejo de Derechos (vulneración de derechos)", "desc": "Ante una vulneración de derechos de un/a adolescente, el programa correspondiente eleva un informe social con los datos completos del adolescente y sus referentes, describiendo la situación que acredita la vulneración.<br/><br/>Se solicita a Mesa de Entradas de la DGPINA la carátula de expediente electrónico. El código de trata tiene dos referencias distintas, según la fuente:<br/>• <b>MDSG0703A</b> — según el mail de la abogada de la Dirección General.<br/>• <b>AJG00101A</b> (\"o similar\") — según el documento interno de circuitos de la Gerencia.<br/><br/>Se vinculan al expediente el informe social y los informes técnicos completos, firmados. El expediente pasa al usuario de Mesa de Entradas y se eleva desde la Gerencia Operativa Legal, dirigido a la Dirección General, que deriva a DGPDES o directamente al Consejo de Derechos de Niñas, Niños y Adolescentes."}, {"titulo": "Líneas de acción 2027", "desc": "Cuatro líneas concretas para pasar de alianzas institucionales a experiencias y oportunidades para los adolescentes.", "sub": [{"titulo": "Adolescencia Te Prepara", "desc": "Primer empleo, educación financiera, orientación vocacional, mentorías, visitas a empresas."}, {"titulo": "Adolescencia Crea", "desc": "Inteligencia artificial, programación, audiovisual, podcast, comunicación, Hackatón Adolescencia."}, {"titulo": "Adolescencia Saludable", "desc": "Nutrición, deporte, hábitos saludables, primeros auxilios, prevención."}, {"titulo": "Adolescencia Conecta", "desc": "Universidades, empresas, medios, clubes profesionales, producción audiovisual, referentes."}]}], "lazos": [{"titulo": "Pago de becas", "desc": "Las adolescencias cobran este estímulo económico con el fin de garantizar la equidad material, incentivar la permanencia en los espacios de contención y eliminar las barreras socioeconómicas que dificultan su desarrollo pleno.<br/><br/>La beca no funciona como un salario ni como un subsidio discrecional, sino como una herramienta de política pública para asegurar que los jóvenes en situación de vulnerabilidad social puedan costear los viáticos, materiales y necesidades básicas asociadas a su participación en actividades educativas, culturales, tecnológicas o deportivas. De esta forma, el Estado promueve la autonomía, la inclusión y la restitución de derechos vulnerados.<br/><br/><b>Marco normativo regulatorio</b> — la entrega de estos fondos obligatorios se sustenta en tres niveles jurídicos:<br/>• <b>Tratados internacionales:</b> la Convención sobre los Derechos del Niño (con rango constitucional en Argentina), que obliga al Estado a disponer del \"máximo de los recursos disponibles\" para asegurar el desarrollo integral de las infancias y adolescencias.<br/>• <b>Leyes de protección integral:</b> Ley Nacional N° 26.061 (los niños, niñas y adolescentes son sujetos de derecho; mandata al Estado a implementar políticas activas frente a la exclusión social) y Ley N° 114 de la Ciudad de Buenos Aires (obliga al GCBA a aplicar programas públicos que garanticen el goce de derechos en condiciones de igualdad, dignidad y sin discriminación).<br/>• <b>Normativa de ejecución específica:</b> decretos porteños (Decreto N° 428/07 y resoluciones del Ministerio de Desarrollo Humano y Hábitat), que autorizan las partidas presupuestarias específicas y definen legalmente el beneficio como un estímulo nominal no remunerativo.<br/><br/><b>Circuito operativo:</b> Un/a adolescente elegible genera expediente, se cruza contra su cuenta bancaria, cambia de estado (elegibilidad, operativa, baja solicitada) y se procesa el pago mensual."}], "lideres": [{"titulo": "Insumos para campamentos", "desc": "Por cada campamento programado: pedido de insumos, compra, depósito y entrega."}, {"titulo": "Alianza con Radio Mitre", "desc": "A partir del taller de radio del programa, los y las jóvenes participan de la organización y producción de la propuesta \"Voces que Inspiran\", en articulación con Radio Mitre."}, {"titulo": "Hitos 2026", "desc": "Readaptaciones y suspensiones por falta de presupuesto, por cohorte.", "sub": [{"titulo": "1er año", "desc": "2 campamentos: el primero realizado en la Escuela García Lorca; el segundo, de noviembre, con lugar todavía pendiente."}, {"titulo": "2do año", "desc": "Campamento readaptado y realizado en la Escuela García Lorca. Gira a Mar del Plata/Mar Chiquita sin presupuesto, en proceso de readaptación."}, {"titulo": "3er año", "desc": "Viaje al Tríptico de la Infancia (Rosario) sin presupuesto, en readaptación. Campamento con el Programa Juegotecas suspendido por falta de presupuesto. Evento \"Conexión sin WiFi\" suspendido por falta de presupuesto."}, {"titulo": "ERA", "desc": "Campamento readaptado para realizarse en la Escuela García Lorca. Salida al Delta del Tigre suspendida por falta de presupuesto."}]}], "coopa": [], "bajoflores": [], "turismo": []};
+const MAPA_GESTIONES_GENERALES = [{"id": "conv", "titulo": "Convenios y organizaciones", "desc": "La articulación con las organizaciones sociales se concreta a través de un Convenio. El ingreso de la propuesta se genera a través de un expediente, donde se envía a la DGTAL para la conformación del marco jurídico correspondiente. Posteriormente se remite a la firma del Ministerio de Desarrollo Humano y Hábitat (MDHyH). Una vez firmado, se procede al pago.<br/><br/><b>¿Por qué se trabaja con organizaciones sociales?</b><br/><br/><b>Democracia participativa y cogestión.</b> La Constitución de la CABA establece que la democracia de la Ciudad tiene carácter participativo. Los considerandos de los convenios recuperan este mandato: incorporar a las OSC permite un diseño de políticas públicas más democrático, plural y cercano a las necesidades reales del vecino.<br/><br/><b>Capilaridad territorial y especialización técnica.</b> Las organizaciones sociales poseen un \"saber hacer\" y un arraigo territorial que el aparato estatal no siempre logra de forma inmediata. El Estado firma convenios para potenciar y articular esas capacidades técnicas, descentralizando la ejecución de programas para llegar de forma más rápida y empática a la población vulnerable.<br/><br/><b>Corresponsabilidad en la protección de derechos.</b> En niñez y adolescencia (ámbito de la DGPINA), la Ley N.° 114 derriba el viejo modelo de patronato e instaura el principio de corresponsabilidad: la protección integral de derechos no es tarea exclusiva del sector público, sino una responsabilidad compartida entre el Estado, las familias y las organizaciones de la comunidad.<br/><br/><b>Marco jurídico estructurado</b><br/><pre class=\"mono\" style=\"font-size:11px; line-height:1.4; white-space:pre; overflow-x:auto; background:#fff; border-radius:6px; padding:10px; color:var(--ink);\">┌─────────────────────────────────────────┐\n│          Constitución de la CABA        │\n│   (Arts. 11, 32 y 39 - Participación)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│        Leyes de Fondo (CABA)            │\n│  - Ley N.° 114 (Protección Integral)    │\n│  - Ley N.° 6.684 (Ley de Ministerios)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│         Decretos y Resoluciones         │\n│  - Decreto N.° 1360/07 (Convenio Marco) │\n│  - Res. N.° 97/SECLYT/25 (Circuito)     │\n└─────────────────────────────────────────┘</pre><br/><b>Nivel constitucional:</b> la Constitución de la CABA obliga al Estado a garantizar canales de participación ciudadana y a fomentar las actividades de las entidades comunitarias sin fines de lucro.<br/><br/><b>Nivel legal de competencia:</b> la Ley N.° 6.684 encomienda al Ministerio de Desarrollo Humano y Hábitat la articulación de sus políticas con actores privados y del tercer sector. La Ley N.° 114 da el marco protectorio específico para que la DGPINA delegue o complemente la atención de adolescentes mediante estos instrumentos institucionales.<br/><br/><b>Nivel operativo y procedimental:</b> el Decreto N.° 1360/07 unifica las reglas mediante el \"Modelo de Convenio Marco de Cooperación\", resguardando la autonomía jurídica y técnica de la organización frente al Estado. La Resolución N.° 97/SECLYT/25 garantiza la transparencia del circuito digital, exigiendo dictámenes legales antes de que los fondos públicos sean girados.<br/><br/><span style=\"font-size:11px; color:var(--ink-soft);\">Fuentes: Constitución de la CABA · Ley N.° 114 · Ley N.° 6.684 · Decreto N.° 1360/07 · Resolución N.° 97/SECLYT/25 · documentosboletinoficial.buenosaires.gob.ar · mpfciudad.gob.ar</span<br/><br/><b>Marco jurídico estructurado</b><br/><pre class=\"mono\" style=\"font-size:11px; line-height:1.4; white-space:pre; overflow-x:auto; background:#fff; border-radius:6px; padding:10px; color:var(--ink);\">┌─────────────────────────────────────────┐\n│          Constitución de la CABA        │\n│   (Arts. 11, 32 y 39 - Participación)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│        Leyes de Fondo (CABA)            │\n│  - Ley N.° 114 (Protección Integral)    │\n│  - Ley N.° 6.684 (Ley de Ministerios)   │\n└────────────────────┬────────────────────┘\n                     ▼\n┌─────────────────────────────────────────┐\n│         Decretos y Resoluciones         │\n│  - Decreto N.° 1360/07 (Convenio Marco) │\n│  - Res. N.° 97/SECLYT/25 (Circuito)     │\n└─────────────────────────────────────────┘</pre><br/><b>Nivel constitucional:</b> la Constitución de la CABA obliga al Estado a garantizar canales de participación ciudadana y a fomentar las actividades de las entidades comunitarias sin fines de lucro.<br/><br/><b>Nivel legal de competencia:</b> la Ley N.° 6.684 encomienda al Ministerio de Desarrollo Humano y Hábitat la articulación de sus políticas con actores privados y del tercer sector. La Ley N.° 114 da el marco protectorio específico para que la DGPINA delegue o complemente la atención de adolescentes mediante estos instrumentos institucionales.<br/><br/><b>Nivel operativo y procedimental:</b> el Decreto N.° 1360/07 unifica las reglas mediante el \"Modelo de Convenio Marco de Cooperación\", resguardando la autonomía jurídica y técnica de la organización frente al Estado. La Resolución N.° 97/SECLYT/25 garantiza la transparencia del circuito digital, exigiendo dictámenes legales antes de que los fondos públicos sean girados.<br/><br/><span style=\"font-size:11px; color:var(--ink-soft);\">Fuentes: Constitución de la CABA · Ley N.° 114 · Ley N.° 6.684 · Decreto N.° 1360/07 · Resolución N.° 97/SECLYT/25 · documentosboletinoficial.buenosaires.gob.ar · mpfciudad.gob.ar</span>", "sub": [{"titulo": "Democracia participativa y cogestión", "desc": "La Constitución de la CABA establece que la democracia de la Ciudad tiene carácter participativo. Los considerandos de los convenios recuperan este mandato: incorporar a las OSC permite un diseño de políticas públicas más democrático, plural y cercano a las necesidades reales del vecino."}, {"titulo": "Capilaridad territorial y especialización técnica", "desc": "Las organizaciones sociales poseen un \"saber hacer\" y un arraigo territorial que el aparato estatal no siempre logra de forma inmediata. El Estado firma convenios para potenciar y articular esas capacidades técnicas, descentralizando la ejecución de programas para llegar de forma más rápida y empática a la población vulnerable."}, {"titulo": "Corresponsabilidad en la protección de derechos", "desc": "En niñez y adolescencia (ámbito de la DGPINA), la Ley N.° 114 derriba el viejo modelo de patronato e instaura el principio de corresponsabilidad: la protección integral de derechos no es tarea exclusiva del sector público, sino una responsabilidad compartida entre el Estado, las familias y las organizaciones de la comunidad."}]}, {"id": "vpn", "titulo": "Accesos VPN", "desc": "<b>Por qué es obligatoria</b> — la VPN es el único puente técnico para acceder al Sistema de Administración de Documentos Electrónicos (SADE), canal obligatorio para tramitar expedientes, rendiciones y gestiones estatales (Decreto N° 589/09). Para los talleres y organizaciones que reciben apoyo económico, también es indispensable para acceder a los módulos de Planes Sociales y Subsidios (PSOCS) y al Registro de Identificación de Beneficiarios (RIB), exigido por la Resolución N° 557/SLYT/15 para fiscalizar y transparentar las prestaciones otorgadas por la Ciudad. La Agencia de Sistemas de Información (ASI) exige conexiones cifradas y validación nominal por CUIL para proteger los datos sensibles de los beneficiarios.", "sub": [{"titulo": "Circuito — pedido nuevo", "desc": "Programa Adolescencias envía por mail a RRHH: formulario, copia de convenio y copia de DNI → RRHH corrobora que el usuario corresponda a su cargo u oficio (control de personal), emite el ticket, y avisa a la coordinadora del Programa y a la ASI que está habilitado para continuar → la ASI deriva internamente a GODI (Gerencia Operativa de Desarrollo Informático, GCBA) → GODI habilita a cada usuario en el sistema de Carga de Asistencia y Acompañamiento del Programa Adolescencias → se entrega el acceso al Programa."}, {"titulo": "Circuito — prórroga", "desc": "Mismo ingreso por mail a RRHH (formulario, convenio, DNI) → RRHH corrobora y emite el ticket, avisa a la coordinadora y a la ASI → como el sistema ya está habilitado, la ASI extiende la vigencia 365 días más, sin derivar a GoDi → avisa al Programa, que confirma la prórroga. <span style=\"font-size:11.5px; color:var(--warn);\">⚠ Documento marcado como BORRADOR por el propio equipo: este paso de la ASI está señalado ahí mismo como inferencia, pendiente de confirmar.</span>"}]}, {"id": "log", "titulo": "Logística de actividades y comunicación", "desc": "Cada programa calendariza el mes. De cada actividad sale un Brief que documenta la actividad que se realizará, la fecha, el lugar, el horario, la cantidad de participantes, responsables y acompañantes, los micros en caso de requerir y la solicitud de comida (menú festivo, refrigerios, viandas). También se gestionan acá las solicitudes de piezas de comunicación (diplomas, folletos, afiches) por Google Form. Guadalupe Coll (RAP) hace el seguimiento de estas tres gestiones. El destino final de las solicitudes, una vez enviadas, no está documentado todavía."}, {"id": "aud", "titulo": "Auditorías", "desc": "En construcción."}, {"id": "diag", "titulo": "Diagnóstico de gestión 2026", "desc": "<b>Marzo (punto de partida):</b> presupuesto y pautas definidos con demora; inicio de talleres postergado y asignaciones a rehacer; documentación y registros descentralizados, con informalidad de información; asistencias incompletas y débil trazabilidad; equipo en proceso de reorganización.<br/><br/><b>Marzo–septiembre (respuesta de gestión):</b> acuerdo del 6% y reasignación de talleres; regularización de convenios, pagos, RIB y PSOC; ordenamiento documental y seguimiento de asistencias; clínicas deportivas, IA y mediciones antropométricas; replanificación de programas y presencia territorial.<br/><br/><b>Hoy — avances y próximos desafíos:</b> seis programas sostenidos; mayor control y trazabilidad de la información (falta mucho todavía); procesos internos más claros y ordenados; consolidar el equipo y el sistema de monitoreo; contar con presupuesto, circuitos y recursos anticipados.<br/><br/><b>Balance:</b> la Gerencia avanzó en ordenar y sostener la ejecución. El próximo salto requiere previsibilidad institucional — presupuesto oportuno, circuitos definidos y disponibilidad de recursos operativos.<br/><br/><b>Decisión 2027 por programa</b> (sostener / fortalecer / reformular), evaluada según tres preguntas: Impacto (¿a quiénes llegamos y qué oportunidades generamos?), Demanda (¿la necesidad que dio origen al programa sigue vigente?) y Gestión (¿qué debemos sostener, fortalecer o reformular?)."}];
 const MAPA_INGRESO = {"expediente": {"titulo": "Por expediente (ingreso excepcional)", "desc": "Ingresa por expediente SADE. Se baja el formulario de ingreso (informe gráfico), se pasa a la coordinadora del programa por mail, se carga en un cuadro compartido (contacto con el adolescente, actividad elegida). Se arman los eleves que firma la Gerencia Operativa Legal, se vinculan al expediente y se remite al destinatario que lo envió."}, "oficio": {"titulo": "Por oficio (pedidos 104 y requerimientos)", "desc": "La Dirección deriva el oficio al programa correspondiente con plazo previo al vencimiento. El programa arma la información, se valida que sea coherente con lo pedido, y se responde por GEDO firmado por la Gerencia Operativa Legal, revisado antes por la abogada de la Dirección General."}, "derivacion": {"titulo": "Derivación al Consejo de Derechos (vulneración de derechos)", "desc": "Ante una vulneración de derechos de un/a adolescente, el programa correspondiente eleva un informe social con los datos completos del adolescente y sus referentes, describiendo la situación que acredita la vulneración.<br/><br/>Se solicita a Mesa de Entradas de la DGPINA la carátula de expediente electrónico. El código de trata tiene dos referencias distintas, según la fuente:<br/>• <b>MDSG0703A</b> — según el mail de la abogada de la Dirección General.<br/>• <b>AJG00101A</b> (\"o similar\") — según el documento interno de circuitos de la Gerencia.<br/><br/>Se vinculan al expediente el informe social y los informes técnicos completos, firmados. El expediente pasa al usuario de Mesa de Entradas y se eleva desde la Gerencia Operativa Legal, dirigido a la Dirección General, que deriva a DGPDES o directamente al Consejo de Derechos de Niñas, Niños y Adolescentes."}};
 const MAPA_PROGRAMA_ORDEN = ["adolescencias", "lazos", "lideres", "coopa", "bajoflores", "turismo"];
-const MAPA_REDACT = [
-  ["Luisina Jaimes", "la Gerencia Operativa Legal"],
-  ["Ángeles Fava", "la Gerencia Operativa Legal"],
-  ["Paloma Besada", "la abogada de la Dirección General"],
-  ["PALOMASBESADA", "el usuario de Mesa de Entradas"],
-  ["Guadalupe", "el equipo de la Gerencia"],
-  ["Adriana", "el área de personal"],
-  ["Danilo Dignani", "el equipo legal de la Gerencia"],
-  ["Santiago Sandoná", "el equipo administrativo"],
-  ["Ana Prado Morello", "el equipo administrativo"],
-];
+const MAPA_REDACT = [["Luisina Jaimes", "la Gerencia Operativa Legal"], ["Ángeles Fava", "la Gerencia Operativa Legal"], ["Paloma Besada", "la abogada de la Dirección General"], ["PALOMASBESADA", "el usuario de Mesa de Entradas"], ["Guadalupe", "el equipo de la Gerencia"], ["Adriana", "el área de personal"], ["Danilo Dignani", "el equipo legal de la Gerencia"], ["Santiago Sandoná", "el equipo administrativo"], ["Ana Prado Morello", "el equipo administrativo"], ["Pablo Riveli", "la Dirección General"], ["Bernardo", "el área que procesa los datos del Programa"]];
 
 let mapaOrgsCache = null;
 let mapaOrgsLoading = false;
@@ -1980,15 +1438,13 @@ function actividadCardHtmlGrupo(miembros, expanded){
   const fondo = colorFondoGrupo(miembros);
   const siglas = miembros.map(m=>(programaById(m.programaId).sigla||programaById(m.programaId).corto)).join(" / ");
   const idsStr = miembros.map(m=>m.id).join(",");
-  const susp = miembros.every(m=>m.suspendida);
   return `
-    <div onclick="abrirGrupoIds('${idsStr}')" style="${susp?"opacity:.45; background-image:repeating-linear-gradient(135deg, transparent 0 9px, rgba(179,38,30,.10) 9px 11px); ":""}position:relative; border:1px solid var(--line); border-radius:8px; padding:10px 40px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+    <div onclick="abrirGrupoIds('${idsStr}')" style="position:relative; border:1px solid var(--line); border-radius:8px; padding:10px 40px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
       <div style="position:absolute; top:0; right:0; bottom:0; width:34px; background:${fondo}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
         <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:8px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,.3);">${siglas}</span>
       </div>
       <div style="font-size:10px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px;">🔗 Compartida entre ${miembros.length} programas</div>
-      ${susp?`<div style="font-size:10px; font-weight:800; color:#b3261e; letter-spacing:.04em; margin-bottom:3px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
-      <div style="font-size:13.5px; font-weight:700;${susp?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}</div>
+      <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
       ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
@@ -1999,14 +1455,12 @@ function actividadCardHtmlGrupo(miembros, expanded){
 function actividadCardHtml(a, expanded){
   const p = programaById(a.programaId);
   const estado = a.tramiteEstado ? estadoById(a.tramiteEstado) : null;
-  const susp = !!a.suspendida;
   return `
-    <div onclick="abrirEdicion('${a.id}')" style="${susp?"opacity:.45; background-image:repeating-linear-gradient(135deg, transparent 0 9px, rgba(179,38,30,.10) 9px 11px); ":""}position:relative; border:1px solid ${p.color}55; border-radius:8px; padding:10px 34px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+    <div onclick="abrirEdicion('${a.id}')" style="position:relative; border:1px solid ${p.color}55; border-radius:8px; padding:10px 34px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
       <div style="position:absolute; top:0; right:0; bottom:0; width:26px; background:${p.color}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
         <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
       </div>
-      ${susp?`<div style="font-size:10px; font-weight:800; color:#b3261e; letter-spacing:.04em; margin-bottom:3px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
-      <div style="font-size:13.5px; font-weight:700;${susp?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}</div>
+      <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
       ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
@@ -2028,7 +1482,6 @@ function renderModal(){
   const mc = document.getElementById("modal-container");
   if(!modalOpen){ mc.innerHTML = ""; return; }
   if(modalMode === "login"){ mc.innerHTML = loginModalHtml(); return; }
-  if(modalKind === "importexcel"){ mc.innerHTML = impModalHtml(); return; }
   if(modalKind === "grupo"){ mc.innerHTML = viewGrupoModalHtml(); return; }
   if(modalKind === "resumen"){ mc.innerHTML = resumenModalHtml(); return; }
   if(modalKind === "tarea"){
@@ -2095,7 +1548,7 @@ function resumenModalHtml(){
                 ${resumenResultados.map(a => `
                   <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer;">
                     <input type="checkbox" style="margin-top:2px;" ${resumenSeleccion.has(a.id)?"checked":""} onchange="toggleResumenSeleccion('${a.id}')" />
-                    <span style="font-size:12.5px;"><b>${escapeHtml(a.titulo||"(sin título)")}</b>${a.suspendida?" <b style='color:#b3261e; font-size:10px;'>SUSPENDIDA</b>":""}<br/><span style="color:var(--ink-soft);">${a.fecha}${a.horaInicio?" · "+a.horaInicio:""}${a.sede?" · "+escapeHtml(a.sede):""}</span></span>
+                    <span style="font-size:12.5px;"><b>${escapeHtml(a.titulo||"(sin título)")}</b><br/><span style="color:var(--ink-soft);">${a.fecha}${a.horaInicio?" · "+a.horaInicio:""}${a.sede?" · "+escapeHtml(a.sede):""}</span></span>
                   </label>
                 `).join("")}
               </div>
@@ -2125,7 +1578,7 @@ function descargarResumenWord(){
   } else {
     filtradas.forEach(a => {
       const progs = (a.programaIds||[a.programaId]).map(id => (programaById(id)||{}).corto || id).join(", ");
-      body.push(`<h3>${escapeHtml(a.titulo||"(sin título)")}${a.suspendida?" — ACTIVIDAD SUSPENDIDA":""}</h3>`);
+      body.push(`<h3>${escapeHtml(a.titulo||"(sin título)")}</h3>`);
       body.push(`<p>`
         + `<b>Fecha:</b> ${a.fecha}${a.fechaHasta ? " a " + a.fechaHasta : ""}<br/>`
         + (a.horaInicio ? `<b>Horario:</b> ${a.horaInicio}${a.horaFin ? " a " + a.horaFin : ""}<br/>` : "")
@@ -2169,8 +1622,7 @@ function viewGrupoModalHtml(){
           <span style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase;">🔗 Actividad compartida</span>
           <button onclick="cerrarModal()" style="font-size:18px;">✕</button>
         </div>
-        ${grupoMiembros.every(m=>m.suspendida)?`<div style="display:inline-block; margin-bottom:6px; font-size:11px; font-weight:800; color:#b3261e; border:1.5px solid #b3261e; border-radius:6px; padding:2px 8px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
-        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0;${grupoMiembros.every(m=>m.suspendida)?" text-decoration:line-through; opacity:.6;":""}">${escapeHtml(a.titulo)}</h2>
+        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0;">${escapeHtml(a.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px; margin-bottom:16px;">
           ${a.sede?`<div>📍 ${escapeHtml(a.sede)}</div>`:""}
           <div class="mono">${a.fecha}${a.horaInicio?` · ${a.horaInicio}${a.horaFin?` a ${a.horaFin}`:""}`:""}</div>
@@ -2219,8 +1671,7 @@ function viewModalHtml(){
           <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:10.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
         </div>
         <button onclick="cerrarModal()" style="position:absolute; top:10px; left:14px; font-size:18px;">✕</button>
-        ${form.suspendida?`<div style="margin-top:28px; display:inline-block; font-size:11px; font-weight:800; color:#b3261e; border:1.5px solid #b3261e; border-radius:6px; padding:2px 8px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
-        <h2 style="font-size:18px; font-weight:700; margin:${form.suspendida?"8px":"28px"} 0 12px 0;${form.suspendida?" text-decoration:line-through; opacity:.6;":""}">${escapeHtml(form.titulo)}</h2>
+        <h2 style="font-size:18px; font-weight:700; margin:28px 0 12px 0;">${escapeHtml(form.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px;">
           ${form.sede?`<div>📍 ${escapeHtml(form.sede)}</div>`:""}
           ${(form.direcciones&&form.direcciones.length) ? form.direcciones.filter(Boolean).map(d=>`<div>🧭 ${escapeHtml(d)}</div>`).join("") : ""}
@@ -2242,9 +1693,8 @@ function viewModalHtml(){
 }
 
 function formModalHtml(){
-  // El fondo NO cierra el cuadro: se cierra solo con ✕ o al guardar (para no perder lo cargado por un clic de más).
   return `
-    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
       <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:480px; max-height:88vh; overflow-y:auto;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h2 style="font-size:17px; font-weight:700; margin:0;">${form.id ? "Editar actividad" : "Nueva actividad"}</h2>
@@ -2253,11 +1703,6 @@ function formModalHtml(){
 
         <div style="margin-bottom:10px;"><label class="fieldLabel">Actividad *</label>
           <input class="inputStyle" value="${escapeHtml(form.titulo)}" oninput="updateForm('titulo', this.value)" placeholder="Ej: Taller de fotografía" />
-        </div>
-
-        <div style="display:flex; align-items:center; gap:8px; margin:0 0 10px 0; padding:8px 10px; border:1px dashed #b3261e; border-radius:8px; background:${form.suspendida?"#fdecea":"transparent"};">
-          <input type="checkbox" id="suspendida" ${form.suspendida?"checked":""} onchange="setSuspendida(this.checked)" />
-          <label for="suspendida" style="font-size:13px; font-weight:700; color:#b3261e; cursor:pointer;">⛔ Actividad suspendida</label>
         </div>
 
         <div style="margin-bottom:10px;">
@@ -2505,9 +1950,8 @@ function viewTareaModalHtml(){
 
 function formTareaModalHtml(){
   const t = tareaForm;
-  // El fondo NO cierra el cuadro: se cierra solo con ✕ o al guardar.
   return `
-    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
       <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:440px; max-height:88vh; overflow-y:auto;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h2 style="font-size:17px; font-weight:700; margin:0;">${t.id ? "Editar tarea" : "Nueva tarea"}</h2>

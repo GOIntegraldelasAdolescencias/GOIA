@@ -109,6 +109,8 @@
 
 <!-- Librería cliente de Supabase -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Lector / generador de Excel (Importar y Exportar) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <script>
 /* ============================================================
@@ -174,7 +176,7 @@ const parseKey = k => { const [y,m,d]=k.split("-").map(Number); return new Date(
 const programaById = id => PROGRAMAS.find(p=>p.id===id);
 const estadoById = id => ESTADOS_TRAMITE.find(e=>e.id===id);
 const emptyForm = () => ({
-  id:null, titulo:"", programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
+  id:null, titulo:"", suspendida:false, programaId:PROGRAMAS[0].id, programaIds:[PROGRAMAS[0].id], organizacion:"", sede:"", direcciones:[""],
   fecha:dateKey(new Date()), fechaHasta:"", horaInicio:"", horaFin:"", personas:"", micros:"", viandasLista:[{tipo:"",cantidad:""}], refrigerios:"",
   tramiteActivo:false, tramiteEstado:"pendiente", proximoPaso:"", observaciones:"",
   repetir:"none", repetirHasta:"", grupoId:null, esCampamento:false,
@@ -296,6 +298,7 @@ function toRow(f){
     proximo_paso: f.tramiteActivo ? (f.proximoPaso || null) : null,
     observaciones: f.observaciones || null,
     tipo_repeticion: f.tipoRepeticion || "unica",
+    suspendida: !!f.suspendida,
   };
 }
 function fromRow(r){
@@ -320,6 +323,7 @@ function fromRow(r){
     observaciones: r.observaciones || "",
     grupoId: r.grupo_id || null,
     tipoRepeticion: r.tipo_repeticion || "unica",
+    suspendida: !!r.suspendida,
   };
 }
 
@@ -363,24 +367,41 @@ let selectedDay = dateKey(new Date());
 let filtro = new Set(PROGRAMAS.map(p=>p.id));
 let busqueda = "";
 let filtroTipo = new Set(["unica"]);
+let verSuspendidas = true; // false = las actividades suspendidas se ocultan de la agenda y de la búsqueda
+function toggleVerSuspendidas(){ verSuspendidas = !verSuspendidas; renderRoot(); }
 let detailDay = dateKey(new Date());
 let form = emptyForm();
 let modalOpen = false;
 let modalMode = "form"; // "form" | "view" | "login"
 let modalKind = "actividad"; // "actividad" | "tarea" | "resumen"
-let resumenFiltros = { programaId:"todos", periodoTipo:"mes", anio:String(new Date().getFullYear()), mes:String(new Date().getMonth()+1).padStart(2,"0"), dia:dateKeySafe(), tipo:"todos" };
+let resumenFiltros = { programaId:"todos", periodoTipo:"mes", anio:String(new Date().getFullYear()), mes:String(new Date().getMonth()+1).padStart(2,"0"), dia:dateKeySafe(), semana:dateKeySafe(), tipo:"todos", suspendidas:"incluir" };
 let resumenResultados = null; // null = todavía no se buscó; [] o [...] = resultado de la búsqueda
 let resumenSeleccion = new Set();
 function dateKeySafe(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function abrirResumen(){ modalKind = "resumen"; modalMode = "form"; modalOpen = true; resumenResultados = null; resumenSeleccion = new Set(); renderModal(); }
 function actualizarResumenFiltro(campo, valor){ resumenFiltros[campo] = valor; resumenResultados = null; renderModal(); }
+// Semana de lunes a domingo que contiene el día elegido → { desde, hasta } como "AAAA-MM-DD"
+function rangoSemana(diaKey){
+  const ini = inicioSemana(parseKey(diaKey || dateKeySafe()));
+  const fin = new Date(ini); fin.setDate(fin.getDate()+6);
+  return { desde: dateKey(ini), hasta: dateKey(fin) };
+}
+function etiquetaSemanaResumen(diaKey){
+  const r = rangoSemana(diaKey);
+  const fmt = k => { const [y,m,d] = k.split("-"); return `${d}/${m}/${y}`; };
+  return `Semana del ${fmt(r.desde)} al ${fmt(r.hasta)}`;
+}
 function buscarResumen(){
   const f = resumenFiltros;
+  const rs = rangoSemana(f.semana);
   const filtradas = actividades.filter(a => {
     if(f.programaId !== "todos" && !(a.programaIds||[a.programaId]).includes(f.programaId)) return false;
     if(f.tipo !== "todos" && categoriaTipo(a.tipoRepeticion) !== f.tipo) return false;
+    if(f.suspendidas === "excluir" && a.suspendida) return false;
     if(f.periodoTipo === "dia"){
       if(a.fecha !== f.dia) return false;
+    } else if(f.periodoTipo === "semana"){
+      if(!a.fecha || a.fecha < rs.desde || a.fecha > rs.hasta) return false;
     } else {
       const ym = a.fecha ? a.fecha.slice(0,7) : "";
       if(ym !== `${f.anio}-${f.mes}`) return false;
@@ -576,6 +597,7 @@ function abrirEdicion(id){
   modalMode = puedeEditar() ? "form" : "view";
   modalOpen = true; renderModal();
 }
+function setSuspendida(v){ form.suspendida = !!v; renderModal(); } // (no usar "form." dentro de un onchange inline: ahí "form" es el formulario HTML del input)
 function agregarDireccion(){ form.direcciones.push(""); renderModal(); }
 function agregarVianda(){ form.viandasLista.push({tipo:"",cantidad:""}); renderModal(); }
 function quitarVianda(i){
@@ -795,6 +817,531 @@ async function importData(input){
   input.value = "";
 }
 
+/* ===================== Importar Excel de Micros =====================
+   Lee la planilla "Micros" (un micro por renglón) y la convierte en UNA actividad por salida:
+   - Misma fecha + hora + programa solicitante + detalle  =>  una sola actividad; "Micros" = cantidad de renglones.
+   - Responsable = horarios (salida / regreso) + nombre del solicitante + celular.
+   - Sede = "Sale de". Dirección = "Destino".
+   - "Talleres habituales" y "Prácticas…" => Jornada normal. El resto => Evento único.
+   Antes de guardar muestra una vista previa; las actividades ya cargadas (misma fecha + programa + título) se omiten. */
+
+/* IMPEXCEL-PURE-START */
+function impNorm(s){ return String(s==null?"":s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim(); }
+function impTexto(v){ return String(v==null?"":v).replace(/\s+/g," ").trim(); }
+function impFecha(v){
+  if(v==null || v==="") return null;
+  let y,m,d;
+  if(typeof v === "number"){
+    const p = XLSX.SSF.parse_date_code(v);
+    if(!p) return null;
+    y=p.y; m=p.m; d=p.d;
+  } else {
+    const s = String(v).trim();
+    let r = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,5})(?:\D|$)/);
+    if(r){ d=+r[1]; m=+r[2]; y=+r[3]; if(r[3].length===2) y+=2000; }
+    else {
+      r = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      if(!r) return null;
+      y=+r[1]; m=+r[2]; d=+r[3];
+    }
+  }
+  if(!(y>=2000 && y<=2100)) return null;
+  const dt = new Date(y, m-1, d);
+  if(dt.getFullYear()!==y || dt.getMonth()!==m-1 || dt.getDate()!==d) return null;
+  return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+}
+function impHora(v){
+  if(v==null || v==="") return "";
+  if(typeof v === "number"){
+    const min = Math.round((v - Math.floor(v)) * 1440) % 1440;
+    return `${String(Math.floor(min/60)).padStart(2,"0")}:${String(min%60).padStart(2,"0")}`;
+  }
+  const s = String(v).trim();
+  let r = s.match(/^(\d{1,2}):(\d{2})/);
+  if(r) return `${r[1].padStart(2,"0")}:${r[2]}`;
+  r = s.match(/^(\d{1,2})\s*(?:h|hs|hrs)?\.?$/i);
+  if(r) return `${r[1].padStart(2,"0")}:00`;
+  return "";
+}
+function impPrograma(prog){
+  const n = impNorm(prog);
+  if(n.startsWith("adolescenc")) return "adolescencias";
+  if(n.startsWith("lideres")) return "lideres";
+  if(n.startsWith("coopa")) return "coopa";
+  if(n.startsWith("tabf") || n.includes("bajo flores")) return "bajoflores";
+  if(n.startsWith("reconstruyendo") || n.startsWith("lazos")) return "lazos";
+  if(n.startsWith("turismo")) return "turismo";
+  return null;
+}
+function impTipo(detalle){
+  const n = impNorm(detalle);
+  if(n.includes("talleres habituales") || n.startsWith("practicas")) return "normal";
+  return "unica";
+}
+const IMP_COLUMNAS = [
+  ["prog",    n => n.startsWith("progr")],
+  ["tel",     n => n.startsWith("telefono")],
+  ["fecha",   n => n === "fecha"],
+  ["hora",    n => n === "hora"],
+  ["veh",     n => n.startsWith("vehiculo")],
+  ["adultos", n => n.includes("adultos")],
+  ["ninos",   n => n.includes("ninos")],
+  ["sale",    n => n.startsWith("sale")],
+  ["destino", n => n === "destino"],
+  ["regreso", n => n === "regreso"],
+  ["solic",   n => n.includes("solicitante")],
+  ["obs",     n => n.startsWith("observ")],
+  ["cant",    n => n.includes("asistentes")],
+  ["conj",    n => n.includes("conjunto")],
+  ["detalle", n => n.startsWith("detalle")],
+];
+function impDetectarEncabezado(aoa){
+  for(let i=0; i<Math.min(aoa.length, 20); i++){
+    const heads = (aoa[i]||[]).map(impNorm);
+    if(!heads.includes("fecha") || !heads.some(h=>h.startsWith("detalle"))) continue;
+    const usadas = new Set(); const col = {};
+    for(const [k, test] of IMP_COLUMNAS){
+      const j = heads.findIndex((h,idx) => !usadas.has(idx) && h && test(h));
+      if(j>=0){ col[k]=j; usadas.add(j); }
+    }
+    return { fila:i, col };
+  }
+  return null;
+}
+function impPlural(n, uno, varios){ return n===1 ? uno : varios; }
+function impProcesarFilas(aoa){
+  const enc = impDetectarEncabezado(aoa);
+  if(!enc) return { ok:false, error:"No encontré los encabezados de la planilla (necesito al menos las columnas FECHA y DETALLE DE LA ACTIVIDAD/EVENTO)." };
+  const faltan = ["prog","fecha","detalle"].filter(k => enc.col[k]===undefined);
+  if(faltan.length) return { ok:false, error:"Faltan columnas obligatorias: " + faltan.map(k=>({prog:"PROGR. SOLICITANTE",fecha:"FECHA",detalle:"DETALLE DE LA ACTIVIDAD/EVENTO"}[k])).join(", ") + "." };
+  const c = enc.col;
+  const get = (row,k) => c[k]===undefined ? "" : row[c[k]];
+  const errores = []; const avisos = [];
+  const grupos = new Map();
+  let filas = 0;
+  for(let i=enc.fila+1; i<aoa.length; i++){
+    const row = aoa[i] || [];
+    if(!row.some(v => impTexto(v)!=="")) continue;
+    const detalle = impTexto(get(row,"detalle"));
+    const progTxt = impTexto(get(row,"prog"));
+    const fechaRaw = get(row,"fecha");
+    if(!detalle && impTexto(fechaRaw)==="") continue;
+    filas++;
+    const nroFila = i+1;
+    const base = { fila:nroFila, programa:progTxt, detalle, fechaTexto: impTexto(fechaRaw) };
+    if(!detalle){ errores.push({...base, motivo:"Falta el detalle de la actividad."}); continue; }
+    const fecha = impFecha(fechaRaw);
+    if(!fecha){ errores.push({...base, motivo:`Fecha inválida o ilegible ("${impTexto(fechaRaw)}"). Corregila en el Excel y volvé a importar.`}); continue; }
+    const programaId = impPrograma(progTxt);
+    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${progTxt}").`}); continue; }
+    const hora = impHora(get(row,"hora"));
+    const key = [fecha, hora, impNorm(progTxt), impNorm(detalle)].join("|");
+    if(!grupos.has(key)) grupos.set(key, { fecha, hora, progTxt, programaId, detalle, rows:[], filasExcel:[] });
+    const g = grupos.get(key);
+    g.rows.push({
+      veh: impTexto(get(row,"veh")), adultos: impTexto(get(row,"adultos")), ninos: impTexto(get(row,"ninos")),
+      sale: impTexto(get(row,"sale")), destino: impTexto(get(row,"destino")), regreso: impTexto(get(row,"regreso")),
+      tel: impTexto(get(row,"tel")), solic: impTexto(get(row,"solic")), obs: impTexto(get(row,"obs")),
+      cant: impTexto(get(row,"cant")), conj: impTexto(get(row,"conj")),
+    });
+    g.filasExcel.push(nroFila);
+  }
+  const uniq = arr => { const vistos = new Set(); const out=[]; for(const v of arr){ if(!v) continue; const k=impNorm(v); if(!vistos.has(k)){ vistos.add(k); out.push(v); } } return out; };
+  const esConj = x => { const n = impNorm(x.conj); return n!=="" && n!=="no"; };
+  // 1) Bloques = una salida. Los grupos "en conjunto con otra área" del mismo día y detalle se juntan en un solo bloque.
+  const bloques = new Map();
+  for(const [k, g] of grupos){
+    const conj = g.rows.some(esConj);
+    const bk = conj ? `conj|${g.fecha}|${impNorm(g.detalle)}` : k;
+    if(!bloques.has(bk)) bloques.set(bk, { fecha:g.fecha, detalle:g.detalle, filas:[], filasExcel:[] });
+    const b = bloques.get(bk);
+    g.rows.forEach(r => b.filas.push({ ...r, hora:g.hora, progTxt:g.progTxt, programaId:g.programaId }));
+    g.filasExcel.forEach(n => b.filasExcel.push(n));
+  }
+  const items = [];
+  let nroBloque = 0;
+  for(const b of bloques.values()){
+    nroBloque++;
+    const programasBloque = uniq(b.filas.map(f=>f.programaId));
+    const hayVarios = new Set(b.filas.map(f => [impNorm(f.progTxt), impNorm(f.sale), f.hora].join("|"))).size > 1;
+    for(const pid of programasBloque){
+      const r = b.filas.filter(f => f.programaId===pid);
+      const esMicro = x => !x.veh || impNorm(x.veh).includes("micro");
+      const micros = r.filter(esMicro).length;
+      const otros = r.filter(x => !esMicro(x));
+      const horas = uniq(r.map(x=>x.hora)).sort();
+      const partes = [];
+      if(horas.length===1) partes.push(`Salida ${horas[0]}`);
+      else if(horas.length>1) partes.push(`Salida ${horas[0]} a ${horas[horas.length-1]} (según sede)`);
+      const regresos = uniq(r.map(x=>x.regreso));
+      if(regresos.length) partes.push(`Regreso ${regresos.join(" / ")}`);
+      const solics = uniq(r.map(x=>x.solic)); if(solics.length) partes.push(solics.join(" / "));
+      const tels = uniq(r.map(x=>x.tel)); if(tels.length) partes.push(`Cel. ${tels.join(" / ")}`);
+      const pax1 = x => [x.ninos ? `${x.ninos} ${impPlural(+x.ninos,"niño/a","niños/as")}` : "", x.adultos ? `${x.adultos} ${impPlural(+x.adultos,"adulto","adultos")}` : ""].filter(Boolean).join(" y ");
+      const obs = [];
+      uniq(r.map(x=>x.obs)).forEach(o => obs.push(o));
+      const orgDe = x => { const m = pid==="adolescencias" ? x.progTxt.match(/^\s*adolescencias?\s*[-–—]\s*(.+)$/i) : null; return m ? impTexto(m[1]) : ""; };
+      const orgs = uniq(r.map(orgDe));
+      if(hayVarios && r.length>1){
+        // Detalle por sede / institución
+        const porSede = new Map();
+        r.forEach(x => { const k=[orgDe(x), impNorm(x.sale), x.hora].join("|"); if(!porSede.has(k)) porSede.set(k, { org:orgDe(x), sale:x.sale, hora:x.hora, pax:[] }); porSede.get(k).pax.push(pax1(x)); });
+        const lineas = [...porSede.values()].map(v => `${v.org||"—"}${v.sale?` (sale de ${v.sale})`:""}${v.hora?` ${v.hora}`:""}: ${v.pax.length} ${impPlural(v.pax.length,"micro","micros")}${v.pax.filter(Boolean).length?` — ${v.pax.filter(Boolean).join(" | ")}`:""}`);
+        obs.push("Detalle por sede:\n" + lineas.map(l=>"- "+l).join("\n"));
+      } else {
+        const pax = r.map(pax1); const paxUnicos = uniq(pax);
+        if(paxUnicos.length === 1) obs.push((r.length>1 ? "Por micro: " : "Pasajeros: ") + paxUnicos[0]);
+        else if(paxUnicos.length > 1) obs.push("Pasajeros — " + pax.map((p,i)=>p ? `Micro ${i+1}: ${p}` : "").filter(Boolean).join(" | "));
+        const cants = uniq(r.map(x=>x.cant).filter(v => /^\d+$/.test(v)));
+        if(cants.length) obs.push(`Cant. de asistentes (planilla): ${cants.join(" / ")}`);
+      }
+      const conjs = uniq(r.map(x=>x.conj).filter(v => impNorm(v)!=="no"));
+      if(conjs.length) obs.push(`Con otra área: ${conjs.join(" / ")}`);
+      if(programasBloque.length>1) obs.push(`Salida compartida con: ${programasBloque.filter(p=>p!==pid).map(p=>({adolescencias:"Adolescencias",lazos:"Reconstruyendo Lazos",lideres:"Líderes",coopa:"COOPA",bajoflores:"Bajo Flores",turismo:"Turismo Social"}[p]||p)).join(", ")}`);
+      if(otros.length) obs.push(`Otros vehículos: ${uniq(otros.map(x=>x.veh)).join(" / ")} (${otros.length})`);
+      const sedes = uniq(r.map(x=>x.sale));
+      items.push({
+        fecha: b.fecha, horaInicio: horas[0] || "", programaId: pid, programaTexto: uniq(r.map(x=>x.progTxt)).join(" / "),
+        titulo: b.detalle,
+        organizacion: orgs.join(", "),
+        sede: sedes.length>2 ? "Varias sedes (ver observaciones)" : sedes.join(" / "),
+        direcciones: (() => { const d = uniq(r.map(x=>x.destino)); return d.length ? d : [""]; })(),
+        personas: partes.join(" · "),
+        micros: String(micros),
+        observaciones: obs.join(". "),
+        tipoRepeticion: impTipo(b.detalle),
+        bloque: nroBloque, programasBloque,
+        filasExcel: r.map((x,i)=>i), renglones: r.length,
+      });
+    }
+  }
+  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio) || a.programaTexto.localeCompare(b.programaTexto));
+  return { ok:true, filas, items, errores, avisos, formato:"micros" };
+}
+
+const IMP_STOP = new Set(["para","salida","salidas","visita","taller","talleres","institucion","instituciones","adolescentes","adolescente","actividad","evento","jornada","con","del","los","las","una","por","cierre"]);
+function impTokens(t){
+  return new Set(impNorm(t).split(/[^a-z0-9]+/).map(w => (w.length>4 && w.endsWith("s")) ? w.slice(0,-1) : w).filter(w => w.length>=4 && !IMP_STOP.has(w)));
+}
+// ¿Ya hay en la agenda algo igual o muy parecido? Misma fecha + mismo programa + mismo tipo (evento único / jornada normal).
+// Devuelve { motivo, titulo } o null.
+function impBuscarRepetida(it, existentes){
+  const cat = t => (!t || t==="unica") ? "unica" : "normal";
+  const mismoDia = existentes.filter(a => a.fecha===it.fecha && a.programaId===it.programaId && cat(a.tipoRepeticion)===cat(it.tipoRepeticion));
+  if(!mismoDia.length) return null;
+  const nt = impNorm(it.titulo);
+  const tk = impTokens(it.titulo + " " + it.organizacion);
+  const orgC = impNorm(it.organizacion);
+  for(const a of mismoDia){
+    const na = impNorm(a.titulo);
+    if(na===nt) return { motivo:"mismo título", titulo:a.titulo };
+    if(Math.min(na.length, nt.length) >= 8 && (na.includes(nt) || nt.includes(na))) return { motivo:"título parecido", titulo:a.titulo };
+    const oa = impNorm(a.organizacion);
+    if(orgC.length>=4 && oa.length>=4 && (orgC===oa || orgC.includes(oa) || oa.includes(orgC))) return { motivo:"misma institución ese día", titulo:a.titulo };
+    const ta = impTokens(a.titulo + " " + (a.organizacion||""));
+    let comunes = 0; tk.forEach(w => { if(ta.has(w)) comunes++; });
+    const minimo = Math.min(tk.size, ta.size);
+    if(minimo>0 && comunes>=Math.min(2,minimo) && comunes/minimo >= 0.6 && comunes>=2) return { motivo:"título parecido", titulo:a.titulo };
+  }
+  // Mismo horario: en los programas con pocas salidas por día alcanza con eso; en Adolescencias hace falta que coincida algo más (sede / destino / institución).
+  if(it.horaInicio){
+    const ext = impTokens([it.titulo, it.organizacion, it.sede, (it.direcciones||[]).join(" ")].join(" "));
+    for(const a of mismoDia){
+      if((a.horaInicio||"").slice(0,5) !== it.horaInicio) continue;
+      if(it.programaId !== "adolescencias") return { motivo:"mismo día, programa y horario", titulo:a.titulo };
+      const ea = impTokens([a.titulo, a.organizacion, a.sede, (a.direcciones||[]).join(" ")].join(" "));
+      let c = 0; ext.forEach(w => { if(ea.has(w)) c++; });
+      if(c>=1) return { motivo:"mismo horario y misma sede/destino", titulo:a.titulo };
+    }
+  }
+  return null;
+}
+// Aviso (no omite): algo muy parecido cargado en OTRA fecha — puede ser la misma salida con la fecha distinta.
+function impBuscarOtraFecha(it, existentes){
+  const cat = t => (!t || t==="unica") ? "unica" : "normal";
+  if(cat(it.tipoRepeticion)!=="unica") return null;
+  const tk = impTokens(it.titulo + " " + it.organizacion);
+  if(tk.size<2) return null;
+  for(const a of existentes){
+    if(a.fecha===it.fecha || a.programaId!==it.programaId || cat(a.tipoRepeticion)!=="unica") continue;
+    const ta = impTokens(a.titulo + " " + (a.organizacion||""));
+    let c = 0; tk.forEach(w => { if(ta.has(w)) c++; });
+    if(c>=3 || (c>=2 && c/Math.min(tk.size,ta.size) >= 0.75)) return { fecha:a.fecha, titulo:a.titulo };
+  }
+  return null;
+}
+
+/* ---- Formato "agenda" (lo que exporta la propia agenda en Excel / JSON) ---- */
+function impProgramaAgenda(txt){
+  const n = impNorm(txt);
+  if(!n) return null;
+  const p = PROGRAMAS.find(p => impNorm(p.id)===n || impNorm(p.nombre)===n || impNorm(p.corto)===n || impNorm(p.sigla)===n);
+  return p ? p.id : impPrograma(txt);
+}
+const IMP_COLUMNAS_AGENDA = [
+  ["titulo",       n => n==="actividad" || n==="titulo"],
+  ["programa",     n => n.startsWith("programa")],
+  ["organizacion", n => n.startsWith("organizacion")],
+  ["sede",         n => n.startsWith("sede")],
+  ["direcciones",  n => n.startsWith("direccion") || n==="destino"],
+  ["fecha",        n => n==="fecha"],
+  ["horaInicio",   n => n==="hora inicio" || n==="hora de inicio" || n==="hora"],
+  ["horaFin",      n => n==="hora fin" || n==="hora de fin"],
+  ["personas",     n => n.startsWith("responsable") || n==="personas"],
+  ["micros",       n => n==="micros"],
+  ["viandas",      n => n.startsWith("viandas")],
+  ["refrigerios",  n => n.startsWith("refrigerios")],
+  ["estado",       n => n.startsWith("estado")],
+  ["proximoPaso",  n => n.startsWith("proximo paso")],
+  ["observaciones",n => n.startsWith("observaciones")],
+  ["tipo",         n => n==="tipo"],
+  ["suspendida",   n => n.startsWith("suspendid")],
+];
+function impDetectarAgenda(aoa){
+  for(let i=0; i<Math.min(aoa.length, 20); i++){
+    const heads = (aoa[i]||[]).map(impNorm);
+    const usadas = new Set(); const col = {};
+    for(const [k, test] of IMP_COLUMNAS_AGENDA){
+      const j = heads.findIndex((h,idx) => !usadas.has(idx) && h && test(h));
+      if(j>=0){ col[k]=j; usadas.add(j); }
+    }
+    if(col.titulo!==undefined && col.fecha!==undefined && col.programa!==undefined) return { fila:i, col };
+  }
+  return null;
+}
+function impViandasDesdeTexto(t){
+  const out = [];
+  impTexto(t).split(/[;,]/).forEach(par => {
+    const m = par.match(/^\s*(.*?)\s*[:=]\s*(\d+)\s*$/);
+    if(m) out.push({ tipo:m[1], cantidad:m[2] });
+  });
+  return out;
+}
+function impProcesarAgenda(aoa){
+  const enc = impDetectarAgenda(aoa);
+  if(!enc) return { ok:false, error:"No reconozco las columnas. Necesito al menos: Actividad, Programa y Fecha." };
+  const c = enc.col;
+  const get = (row,k) => c[k]===undefined ? "" : row[c[k]];
+  const items = []; const errores = []; let filas = 0;
+  for(let i=enc.fila+1; i<aoa.length; i++){
+    const row = aoa[i] || [];
+    if(!row.some(v => impTexto(v)!=="")) continue;
+    filas++;
+    const titulo = impTexto(get(row,"titulo"));
+    const progTxt = impTexto(get(row,"programa"));
+    const base = { fila:i+1, programa:progTxt, detalle:titulo, fechaTexto:impTexto(get(row,"fecha")) };
+    if(!titulo){ errores.push({...base, motivo:"Falta el nombre de la actividad."}); continue; }
+    const fecha = impFecha(get(row,"fecha"));
+    if(!fecha){ errores.push({...base, motivo:`Fecha inválida o ilegible ("${impTexto(get(row,"fecha"))}").`}); continue; }
+    const programaId = impProgramaAgenda(progTxt);
+    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${progTxt}").`}); continue; }
+    const tipoN = impNorm(get(row,"tipo"));
+    const est = impNorm(get(row,"estado"));
+    const estadoId = (typeof ESTADOS_TRAMITE!=="undefined" ? ESTADOS_TRAMITE.find(e => impNorm(e.label)===est || e.id===est) : null);
+    const dirs = impTexto(get(row,"direcciones")).split(" / ").map(x=>x.trim()).filter(Boolean);
+    items.push({
+      fecha, horaInicio: impHora(get(row,"horaInicio")), horaFin: impHora(get(row,"horaFin")),
+      programaId, programaTexto: progTxt, titulo,
+      organizacion: impTexto(get(row,"organizacion")), sede: impTexto(get(row,"sede")),
+      direcciones: dirs.length ? dirs : [""],
+      personas: impTexto(get(row,"personas")),
+      micros: /^\d+$/.test(impTexto(get(row,"micros"))) ? impTexto(get(row,"micros")) : "",
+      viandasLista: (() => { const v = impViandasDesdeTexto(get(row,"viandas")); return v.length ? v : [{tipo:"",cantidad:""}]; })(),
+      refrigerios: /^\d+$/.test(impTexto(get(row,"refrigerios"))) ? impTexto(get(row,"refrigerios")) : "",
+      tramiteEstado: estadoId ? estadoId.id : null, proximoPaso: impTexto(get(row,"proximoPaso")),
+      observaciones: impTexto(get(row,"observaciones")),
+      tipoRepeticion: (tipoN.startsWith("jornada") || tipoN==="normal") ? "normal" : "unica",
+      suspendida: ["si","sí","x","true","1","suspendida"].includes(impNorm(get(row,"suspendida"))) || impNorm(get(row,"suspendida"))==="si",
+      bloque: items.length+1, programasBloque:[programaId], renglones:1,
+    });
+  }
+  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio));
+  return { ok:true, filas, items, errores, avisos:[], formato:"agenda" };
+}
+function impItemsDesdeJson(data){
+  if(!Array.isArray(data)) return { ok:false, error:"El JSON tiene que ser una lista de actividades." };
+  const items = []; const errores = [];
+  data.forEach((o, i) => {
+    o = o || {};
+    const titulo = impTexto(o.titulo);
+    const base = { fila:i+1, programa:impTexto(o.programaId), detalle:titulo, fechaTexto:impTexto(o.fecha) };
+    if(!titulo){ errores.push({...base, motivo:"Falta el título."}); return; }
+    const fecha = impFecha(o.fecha);
+    if(!fecha){ errores.push({...base, motivo:`Fecha inválida ("${impTexto(o.fecha)}").`}); return; }
+    const programaId = impProgramaAgenda(o.programaId);
+    if(!programaId){ errores.push({...base, motivo:`Programa no reconocido ("${impTexto(o.programaId)}").`}); return; }
+    items.push({
+      ...o, titulo, fecha, programaId, programaTexto:impTexto(o.programaId),
+      horaInicio: o.horaInicio ? impHora(o.horaInicio) : "", horaFin: o.horaFin ? impHora(o.horaFin) : "",
+      organizacion: o.organizacion||"", sede: o.sede||"",
+      direcciones: (Array.isArray(o.direcciones) && o.direcciones.length) ? o.direcciones : [""],
+      personas: o.personas||"", micros: (o.micros!=null && o.micros!=="") ? String(o.micros) : "",
+      observaciones: o.observaciones||"", tipoRepeticion: o.tipoRepeticion || "unica", suspendida: !!o.suspendida,
+      bloque: items.length+1, programasBloque:[programaId], renglones:1,
+    });
+  });
+  items.sort((a,b) => (a.fecha+a.horaInicio).localeCompare(b.fecha+b.horaInicio));
+  return { ok:true, filas:data.length, items, errores, avisos:[], formato:"json" };
+}
+/* IMPEXCEL-PURE-END */
+
+function impLeerLibro(u8){
+  const wb = XLSX.read(u8, { type:"array" });
+  let ultimoError = "El archivo no tiene hojas con datos.";
+  for(const nombre of wb.SheetNames){
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header:1, raw:true, defval:"" });
+    let res = impProcesarFilas(aoa);                 // planilla de Micros
+    if(!res.ok) res = impProcesarAgenda(aoa);        // Excel de la propia agenda
+    if(res.ok){ res.hoja = nombre; return res; }
+    ultimoError = "No reconozco el formato. Puede ser la planilla de Micros (columnas FECHA, PROGR. SOLICITANTE, DETALLE DE LA ACTIVIDAD/EVENTO…) o un Excel exportado desde esta agenda (Actividad, Programa, Fecha…).";
+  }
+  return { ok:false, error: ultimoError };
+}
+
+let impState = null; // { archivo, hoja, formato, filas, items, errores, sel:Set, estado:"vista"|"guardando"|"listo", resultado }
+
+// Un solo botón "Importar": acepta Excel (.xlsx/.xls), CSV y JSON. Siempre muestra vista previa y omite lo ya cargado.
+function importarArchivo(input){
+  const file = input.files && input.files[0];
+  input.value = "";
+  if(!currentUser){ abrirLogin(); return; }
+  if(!modoEditor){ alert("Activá el modo editor (arriba a la derecha) para importar."); return; }
+  if(!file) return;
+  const esJson = /\.json$/i.test(file.name);
+  if(!esJson && typeof XLSX === "undefined"){ alert("No se pudo cargar el lector de Excel. Revisá la conexión a internet y probá de nuevo."); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    let res;
+    try{
+      res = esJson ? impItemsDesdeJson(JSON.parse(e.target.result)) : impLeerLibro(new Uint8Array(e.target.result));
+    }catch(err){ console.error(err); alert("No pude leer el archivo. Tiene que ser un Excel (.xlsx / .xls), un CSV o un JSON de la agenda."); return; }
+    if(!res.ok){ alert(res.error); return; }
+    // Marcar las que ya están cargadas en la agenda (igual o parecida: misma fecha + programa)
+    res.items.forEach(it => { const r = impBuscarRepetida(it, actividades); it.yaCargada = !!r; it.repetidaCon = r; it.otraFecha = r ? null : impBuscarOtraFecha(it, actividades); });
+    impState = { archivo:file.name, hoja:res.hoja||"", formato:res.formato, filas:res.filas, items:res.items, errores:res.errores,
+      sel:new Set(res.items.map((it,i)=>i).filter(i=>!res.items[i].yaCargada)), estado:"vista", resultado:"" };
+    modalKind = "importexcel"; modalMode = "form"; modalOpen = true; renderModal();
+  };
+  if(esJson) reader.readAsText(file); else reader.readAsArrayBuffer(file);
+}
+const importExcel = importarArchivo; // compatibilidad con la versión anterior del botón
+
+// Exportar a Excel: un renglón por actividad, con las mismas columnas que acepta "Importar".
+const EXPORT_ENCABEZADOS = ["Actividad","Programa","Organización","Sede","Dirección / Destino","Fecha","Hora inicio","Hora fin","Responsable","Micros","Viandas","Refrigerios","Estado trámite","Próximo paso","Observaciones","Tipo","Suspendida"];
+function exportExcel(){
+  if(typeof XLSX === "undefined"){ alert("No se pudo cargar el generador de Excel. Revisá la conexión a internet o usá el respaldo JSON."); return; }
+  const orden = [...actividades].sort((a,b) => ((a.fecha||"")+(a.horaInicio||"")).localeCompare((b.fecha||"")+(b.horaInicio||"")));
+  const serial = k => { const [y,m,d] = k.split("-").map(Number); return Math.round((Date.UTC(y,m-1,d) - Date.UTC(1899,11,30)) / 86400000); };
+  const filas = orden.map(a => [
+    a.titulo||"", (programaById(a.programaId)||{}).nombre || a.programaId || "", a.organizacion||"", a.sede||"",
+    (a.direcciones||[]).filter(Boolean).join(" / "), a.fecha ? serial(a.fecha) : "", a.horaInicio||"", a.horaFin||"",
+    a.personas||"", a.micros!=="" && a.micros!=null ? Number(a.micros) : "",
+    (a.viandasLista||[]).filter(v=>v.cantidad!=="" && v.cantidad!=null).map(v=>`${v.tipo||"Viandas"}: ${v.cantidad}`).join("; "),
+    a.refrigerios!=="" && a.refrigerios!=null ? Number(a.refrigerios) : "",
+    a.tramiteEstado ? ((estadoById(a.tramiteEstado)||{}).label || a.tramiteEstado) : "", a.proximoPaso||"", a.observaciones||"",
+    categoriaTipo(a.tipoRepeticion)==="normal" ? "Jornada normal" : "Evento único",
+    a.suspendida ? "Sí" : "",
+  ]);
+  const ws = XLSX.utils.aoa_to_sheet([EXPORT_ENCABEZADOS, ...filas]);
+  for(let r=1; r<=filas.length; r++){ const cell = ws[XLSX.utils.encode_cell({r, c:5})]; if(cell && cell.t==="n") cell.z = "dd/mm/yyyy"; }
+  ws["!cols"] = [48,28,26,30,40,12,10,10,40,8,22,12,16,30,60,16,12].map(w => ({wch:w}));
+  ws["!autofilter"] = { ref: XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:filas.length, c:EXPORT_ENCABEZADOS.length-1}}) };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Agenda");
+  XLSX.writeFile(wb, `agenda-goia-${dateKey(new Date())}.xlsx`);
+}
+function impToggle(i, on){ if(on) impState.sel.add(i); else impState.sel.delete(i); renderModal(); }
+function impToggleTodas(on){
+  impState.sel = on ? new Set(impState.items.map((it,i)=>i).filter(i=>!impState.items[i].yaCargada)) : new Set();
+  renderModal();
+}
+function impCerrar(){ impState = null; cerrarModal(); }
+async function impGuardar(){
+  if(!impState || impState.estado!=="vista") return;
+  const elegidas = impState.items.filter((it,i) => impState.sel.has(i));
+  if(!elegidas.length) return;
+  impState.estado = "guardando"; renderModal();
+  const porBloque = {};
+  elegidas.forEach(it => { porBloque[it.bloque] = (porBloque[it.bloque]||0) + 1; });
+  const grupoDe = {};
+  Object.keys(porBloque).forEach(b => { if(porBloque[b]>1) grupoDe[b] = uidGrupo(); });
+  const rows = elegidas.map(it => ({ ...toRow({...emptyForm(), ...it, tramiteActivo: !!it.tramiteEstado}), ...(grupoDe[it.bloque] ? { grupo_id: grupoDe[it.bloque] } : {}) }));
+  let guardadas = 0;
+  for(let i=0; i<rows.length; i+=100){
+    const { error } = await sb.from("actividades").insert(rows.slice(i, i+100));
+    if(error){
+      console.error(error);
+      impState.estado = "vista";
+      impState.resultado = `Se guardaron ${guardadas} de ${rows.length} y se cortó por un error. Revisá la agenda antes de volver a importar para no duplicar.`;
+      renderModal(); cargarActividades(); return;
+    }
+    guardadas += Math.min(100, rows.length - i);
+  }
+  impState.estado = "listo";
+  impState.resultado = `Listo: se cargaron ${guardadas} actividades.`;
+  renderModal(); cargarActividades();
+}
+function impModalHtml(){
+  const s = impState;
+  const nuevas = s.items.filter(it => !it.yaCargada);
+  const dups = s.items.filter(it => it.yaCargada);
+  const fmt = k => { const [y,m,d] = k.split("-"); return `${d}/${m}/${y}`; };
+  const filaItem = (it, i) => {
+    const p = programaById(it.programaId);
+    return `<tr style="border-top:1px solid var(--line); ${(it.yaCargada && !s.sel.has(i))?'opacity:.55;':''}">
+      <td style="padding:6px 6px;"><input type="checkbox" ${s.sel.has(i)?"checked":""} ${s.estado!=="vista"?"disabled":""} onchange="impToggle(${i}, this.checked)" /></td>
+      <td style="padding:6px; white-space:nowrap;">${fmt(it.fecha)}<br><span style="color:var(--ink-soft);">${escapeHtml(it.horaInicio||"")}</span></td>
+      <td style="padding:6px;"><span style="color:${p.color}; font-weight:700;">${escapeHtml(p.corto)}</span>${it.organizacion?`<br><span style="color:var(--ink-soft);">${escapeHtml(it.organizacion)}</span>`:""}</td>
+      <td style="padding:6px;">${escapeHtml(it.titulo)}<br><span style="color:var(--ink-soft);">${it.tipoRepeticion==="normal"?"Jornada normal":"Evento único"}${it.programasBloque.length>1?" · salida compartida entre "+it.programasBloque.length+" programas":""}</span></td>
+      <td style="padding:6px;">${escapeHtml(it.sede||"")}<br><span style="color:var(--ink-soft);">→ ${escapeHtml((it.direcciones||[]).join(" / "))}</span></td>
+      <td style="padding:6px; text-align:center; font-weight:700;">${escapeHtml(it.micros)}</td>
+      <td style="padding:6px; font-size:11.5px;">${it.yaCargada ? `Ya cargada (${escapeHtml(it.repetidaCon.motivo)}): ${escapeHtml(it.repetidaCon.titulo||"")}` : (it.otraFecha ? `<span style="color:var(--warn); font-weight:600;">⚠️ Parecida en otra fecha (${fmt(it.otraFecha.fecha)}): ${escapeHtml(it.otraFecha.titulo||"")}</span>` : "")}</td>
+    </tr>`;
+  };
+  const TOPE = 400;
+  const idx = s.items.map((it,i)=>i);
+  const aMostrar = idx.filter(i=>!s.items[i].yaCargada).concat(idx.filter(i=>s.items[i].yaCargada)).slice(0, TOPE);
+  const filasHtml = aMostrar.map(i => filaItem(s.items[i], i)).join("") + (s.items.length > TOPE ? `<tr><td colspan="7" style="padding:8px; color:var(--ink-soft);">… y ${s.items.length-TOPE} más (no se muestran, pero se importan igual si están tildadas).</td></tr>` : "");
+  const errHtml = s.errores.length ? `
+    <div style="background:var(--warn-soft); color:var(--warn); border-radius:8px; padding:10px 12px; margin:12px 0; font-size:12.5px;">
+      <b>⚠️ ${s.errores.length} ${impPlural(s.errores.length,"renglón no se importa","renglones no se importan")} (revisar en el Excel):</b>
+      <ul style="margin:6px 0 0 18px; padding:0;">
+        ${s.errores.map(e => `<li>Fila ${e.fila}${e.programa?` · ${escapeHtml(e.programa)}`:""}${e.detalle?` · ${escapeHtml(e.detalle)}`:""} — ${escapeHtml(e.motivo)}</li>`).join("")}
+      </ul>
+    </div>` : "";
+  const nSel = s.sel.size;
+  return `
+    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+      <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:980px; max-height:90vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <h2 style="font-size:17px; font-weight:700; margin:0;">${s.formato==="micros" ? "Importar micros desde Excel" : "Importar actividades"}</h2>
+          <button onclick="impCerrar()" style="font-size:18px;">✕</button>
+        </div>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">${escapeHtml(s.archivo)}${s.hoja ? ` · hoja "${escapeHtml(s.hoja)}"` : ""}</div>
+        <div style="font-size:13.5px; margin-bottom:6px;">
+          Se leyeron <b>${s.filas}</b> ${s.formato==="micros" ? "renglones (un micro por renglón) y quedaron" : impPlural(s.filas,"actividad","actividades")+" y quedaron"} <b>${s.items.length}</b> ${impPlural(s.items.length,"actividad","actividades")}:
+          <b>${nuevas.length}</b> ${impPlural(nuevas.length,"nueva","nuevas")}${dups.length?`, <b>${dups.length}</b> ya estaban cargadas o son parecidas (se omiten; si no es así, tildalas)`:""}${s.errores.length?`, <b>${s.errores.length}</b> con problemas`:""}.
+        </div>
+        ${s.formato==="micros" ? `<div style="font-size:12px; color:var(--ink-soft);">Responsable = horarios + solicitante + celular · Sede = "Sale de" · Dirección = "Destino" · Micros = cantidad de renglones. Podés destildar las que no quieras cargar.</div>` : `<div style="font-size:12px; color:var(--ink-soft);">Podés destildar las que no quieras cargar.</div>`}
+        ${errHtml}
+        <div style="overflow-x:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; max-height:48vh; overflow-y:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+            <thead style="position:sticky; top:0; background:var(--paper);"><tr style="text-align:left;">
+              <th style="padding:6px;"><input type="checkbox" ${nSel===nuevas.length && nuevas.length?"checked":""} ${s.estado!=="vista"?"disabled":""} onchange="impToggleTodas(this.checked)" /></th>
+              <th style="padding:6px;">Fecha</th><th style="padding:6px;">Programa</th><th style="padding:6px;">Actividad</th><th style="padding:6px;">Sede → Dirección</th><th style="padding:6px;">Micros</th><th style="padding:6px;"></th>
+            </tr></thead>
+            <tbody>${filasHtml}</tbody>
+          </table>
+        </div>
+        ${s.resultado ? `<div style="margin-top:12px; font-size:13px; font-weight:600; color:${s.estado==="listo"?"var(--accent)":"var(--warn)"};">${escapeHtml(s.resultado)}</div>` : ""}
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+          <button onclick="impCerrar()" style="border:1px solid var(--line); border-radius:8px; padding:9px 18px; font-weight:600; font-size:14px;">${s.estado==="listo"?"Cerrar":"Cancelar"}</button>
+          ${s.estado==="listo" ? "" : `<button onclick="impGuardar()" ${(nSel===0||s.estado!=="vista")?"disabled":""} style="background:var(--accent); color:#fff; border-radius:8px; padding:9px 18px; font-weight:700; font-size:14px; ${(nSel===0||s.estado!=="vista")?'opacity:.5; cursor:default;':''}">${s.estado==="guardando"?"Guardando…":`Importar ${nSel} ${impPlural(nSel,"actividad","actividades")}`}</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
 /* ===================== Grilla ===================== */
 function buildMonthGrid(year, month){
   const first = new Date(year, month, 1);
@@ -809,6 +1356,7 @@ function porDia(){
   for(const a of actividades){
     if(!filtro.has(a.programaId)) continue;
     if(!filtroTipo.has(categoriaTipo(a.tipoRepeticion))) continue;
+    if(!verSuspendidas && a.suspendida) continue;
     if(!map[a.fecha]) map[a.fecha]=[];
     map[a.fecha].push(a);
   }
@@ -930,10 +1478,11 @@ function render(){
         ` : `
           <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="abrirLogin()">Iniciar sesión</button>
         `}
-        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportData()">Exportar</button>
-        <label class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; display:inline-flex; align-items:center;">
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportExcel()" title="Descarga todas las actividades en un Excel">Exportar Excel</button>
+        <button class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600;" onclick="exportData()" title="Respaldo en formato JSON">Respaldo JSON</button>
+        <label class="navbtn" style="width:auto; padding:0 12px; font-size:12px; font-weight:600; display:inline-flex; align-items:center;" title="Excel (.xlsx), CSV o JSON. Siempre muestra una vista previa y omite lo que ya está cargado.">
           Importar
-          <input type="file" accept="application/json" style="display:none;" onchange="importData(this)" />
+          <input type="file" accept=".xlsx,.xls,.csv,.json,application/json" style="display:none;" onchange="importarArchivo(this)" />
         </label>
       </div>
     </div>
@@ -1003,6 +1552,11 @@ function renderAgenda(consolidado, dias, today){
             border:1.5px solid ${activo?"var(--accent)":"var(--line)"}; background:${activo?"var(--accent-soft)":"#fff"}; color:${activo?"var(--accent)":"var(--ink-soft)"};">${t.label}
           </button>`;
         }).join("")}
+        <span style="width:1px; background:var(--line); margin:0 4px;"></span>
+        <button class="chip" onclick="toggleVerSuspendidas()" title="Clic: mostrar u ocultar las actividades suspendidas"
+          style="padding:6px 12px; border-radius:999px; font-size:13px; font-weight:500;
+          border:1.5px solid ${verSuspendidas?"#b3261e":"var(--line)"}; background:${verSuspendidas?"#fdecea":"#fff"}; color:${verSuspendidas?"#b3261e":"var(--ink-soft)"};">${verSuspendidas?"⛔ Suspendidas: visibles":"⛔ Suspendidas: ocultas"}
+        </button>
       </div>
     </div>
 
@@ -1030,7 +1584,7 @@ function renderAgenda(consolidado, dias, today){
     <div id="view-body"></div>
     `}
 
-    ${(dataLoaded && actividades.length===0) ? `<div style="margin-top:16px; font-size:13px; color:var(--ink-soft);">Todavía no hay actividades cargadas. Usá "Nueva actividad" para empezar, o "Importar" si ya tenés un respaldo.</div>` : ""}
+    ${(dataLoaded && actividades.length===0) ? `<div style="margin-top:16px; font-size:13px; color:var(--ink-soft);">Todavía no hay actividades cargadas. Usá "Nueva actividad" para empezar, o "Importar" si ya tenés un Excel o un respaldo.</div>` : ""}
     <div style="margin-top:24px; font-size:11px; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:10px;">
       Los datos se guardan en una base compartida: lo que cargue cualquier persona con acceso se ve al instante desde cualquier dispositivo.
     </div>
@@ -1068,7 +1622,8 @@ function renderMes(dias, today){
                   const fondo = colorFondoGrupo(miembros);
                   const idsStr = miembros.map(m=>m.id).join(",");
                   const accion = miembros.length>1 ? `abrirGrupoIds('${idsStr}')` : `abrirEdicion('${a.id}')`;
-                  return `<div onclick="event.stopPropagation(); ${accion}" title="${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="width:21px; height:21px; border-radius:5px; background:${fondo}; color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
+                  const susp = miembros.every(m=>m.suspendida);
+                  return `<div onclick="event.stopPropagation(); ${accion}" title="${susp?"[SUSPENDIDA] ":""}${escapeHtml(a.titulo)}${miembros.length>1?" — compartida entre "+miembros.length+" programas":""}" style="${susp?"opacity:.38; outline:1.5px dashed #b3261e; outline-offset:-1px; ":""}width:21px; height:21px; border-radius:5px; background:${fondo}; color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${iniciales(a.titulo)}</div>`;
                 }).join("")}
                 ${totalChips>6 ? `<div style="width:21px; height:21px; border-radius:5px; background:var(--ink-soft); color:#fff; font-size:8.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">+${totalChips-6}</div>` : ""}
               </div>
@@ -1122,7 +1677,7 @@ function renderDia(dias){
 function renderResultadosBusqueda(q){
   const texto = q.trim().toLowerCase();
   const resultados = actividades
-    .filter(a => filtro.has(a.programaId) && coincideBusqueda(a, texto))
+    .filter(a => filtro.has(a.programaId) && (verSuspendidas || !a.suspendida) && coincideBusqueda(a, texto))
     .sort((a,b)=> (a.fecha+(a.horaInicio||"")).localeCompare(b.fecha+(b.horaInicio||"")));
   const CAP = 300;
   const mostrar = resultados.slice(0, CAP);
@@ -1133,10 +1688,10 @@ function renderResultadosBusqueda(q){
       </div>
       ${mostrar.length===0 ? `<div style="padding:24px; text-align:center; font-size:13px; color:var(--ink-soft);">No se encontraron actividades.</div>` : mostrar.map(a=>{
         const p = programaById(a.programaId);
-        return `<div onclick="irABusquedaResultado('${a.fecha}')" style="display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer;">
+        return `<div onclick="irABusquedaResultado('${a.fecha}')" style="${a.suspendida?"opacity:.45; ":""}display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer;">
           <span style="width:9px; height:9px; border-radius:50%; background:${p.color}; flex-shrink:0;" title="${p.nombre}"></span>
           <span class="mono" style="font-size:11.5px; color:var(--ink-soft); width:110px; flex-shrink:0;">${a.fecha}${a.horaInicio?` · ${a.horaInicio}`:""}</span>
-          <span style="font-size:13px; font-weight:600; flex:1; min-width:140px;">${escapeHtml(a.titulo)}</span>
+          <span style="font-size:13px; font-weight:600; flex:1; min-width:140px;${a.suspendida?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}${a.suspendida?" <b style='color:#b3261e; font-size:10px;'>SUSPENDIDA</b>":""}</span>
           <span style="font-size:11.5px; color:var(--ink-soft);">${escapeHtml(a.organizacion||"")}</span>
         </div>`;
       }).join("")}
@@ -1438,13 +1993,15 @@ function actividadCardHtmlGrupo(miembros, expanded){
   const fondo = colorFondoGrupo(miembros);
   const siglas = miembros.map(m=>(programaById(m.programaId).sigla||programaById(m.programaId).corto)).join(" / ");
   const idsStr = miembros.map(m=>m.id).join(",");
+  const susp = miembros.every(m=>m.suspendida);
   return `
-    <div onclick="abrirGrupoIds('${idsStr}')" style="position:relative; border:1px solid var(--line); border-radius:8px; padding:10px 40px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+    <div onclick="abrirGrupoIds('${idsStr}')" style="${susp?"opacity:.45; background-image:repeating-linear-gradient(135deg, transparent 0 9px, rgba(179,38,30,.10) 9px 11px); ":""}position:relative; border:1px solid var(--line); border-radius:8px; padding:10px 40px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
       <div style="position:absolute; top:0; right:0; bottom:0; width:34px; background:${fondo}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
         <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:8px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,.3);">${siglas}</span>
       </div>
       <div style="font-size:10px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px;">🔗 Compartida entre ${miembros.length} programas</div>
-      <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
+      ${susp?`<div style="font-size:10px; font-weight:800; color:#b3261e; letter-spacing:.04em; margin-bottom:3px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
+      <div style="font-size:13.5px; font-weight:700;${susp?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
       ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
@@ -1455,12 +2012,14 @@ function actividadCardHtmlGrupo(miembros, expanded){
 function actividadCardHtml(a, expanded){
   const p = programaById(a.programaId);
   const estado = a.tramiteEstado ? estadoById(a.tramiteEstado) : null;
+  const susp = !!a.suspendida;
   return `
-    <div onclick="abrirEdicion('${a.id}')" style="position:relative; border:1px solid ${p.color}55; border-radius:8px; padding:10px 34px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
+    <div onclick="abrirEdicion('${a.id}')" style="${susp?"opacity:.45; background-image:repeating-linear-gradient(135deg, transparent 0 9px, rgba(179,38,30,.10) 9px 11px); ":""}position:relative; border:1px solid ${p.color}55; border-radius:8px; padding:10px 34px 10px 12px; margin-bottom:8px; cursor:pointer; background:#fff; min-height:92px;">
       <div style="position:absolute; top:0; right:0; bottom:0; width:26px; background:${p.color}; border-radius:0 7px 7px 0; display:flex; align-items:center; justify-content:center; overflow:hidden;">
         <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
       </div>
-      <div style="font-size:13.5px; font-weight:700;">${escapeHtml(a.titulo)}</div>
+      ${susp?`<div style="font-size:10px; font-weight:800; color:#b3261e; letter-spacing:.04em; margin-bottom:3px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
+      <div style="font-size:13.5px; font-weight:700;${susp?" text-decoration:line-through;":""}">${escapeHtml(a.titulo)}</div>
       ${a.sede ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">📍 ${escapeHtml(a.sede)}</div>` : ""}
       ${(a.direcciones&&a.direcciones.length) ? a.direcciones.map(d=>`<div style="font-size:11.5px; color:var(--ink-soft);">🧭 ${escapeHtml(d)}</div>`).join("") : ""}
       ${(a.horaInicio||a.horaFin) ? `<div class="mono" style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${a.horaInicio||"—"}${a.horaFin?` a ${a.horaFin}`:""}</div>` : ""}
@@ -1482,6 +2041,7 @@ function renderModal(){
   const mc = document.getElementById("modal-container");
   if(!modalOpen){ mc.innerHTML = ""; return; }
   if(modalMode === "login"){ mc.innerHTML = loginModalHtml(); return; }
+  if(modalKind === "importexcel"){ mc.innerHTML = impModalHtml(); return; }
   if(modalKind === "grupo"){ mc.innerHTML = viewGrupoModalHtml(); return; }
   if(modalKind === "resumen"){ mc.innerHTML = resumenModalHtml(); return; }
   if(modalKind === "tarea"){
@@ -1513,6 +2073,7 @@ function resumenModalHtml(){
         <label style="font-size:12px; font-weight:600; color:var(--ink-soft); display:block; margin-bottom:5px;">Período</label>
         <div style="display:flex; gap:8px; margin-bottom:10px;">
           <button type="button" onclick="actualizarResumenFiltro('periodoTipo','mes')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.periodoTipo==='mes'?"var(--accent)":"var(--line)"}; background:${f.periodoTipo==='mes'?"var(--accent-soft)":"#fff"}; color:${f.periodoTipo==='mes'?"var(--accent)":"var(--ink-soft)"};">Mes y año</button>
+          <button type="button" onclick="actualizarResumenFiltro('periodoTipo','semana')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.periodoTipo==='semana'?"var(--accent)":"var(--line)"}; background:${f.periodoTipo==='semana'?"var(--accent-soft)":"#fff"}; color:${f.periodoTipo==='semana'?"var(--accent)":"var(--ink-soft)"};">Semana</button>
           <button type="button" onclick="actualizarResumenFiltro('periodoTipo','dia')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.periodoTipo==='dia'?"var(--accent)":"var(--line)"}; background:${f.periodoTipo==='dia'?"var(--accent-soft)":"#fff"}; color:${f.periodoTipo==='dia'?"var(--accent)":"var(--ink-soft)"};">Día puntual</button>
         </div>
         ${f.periodoTipo==='mes' ? `
@@ -1524,15 +2085,24 @@ function resumenModalHtml(){
               ${anios.map(y=>`<option value="${y}" ${f.anio===String(y)?"selected":""}>${y}</option>`).join("")}
             </select>
           </div>
+        ` : (f.periodoTipo==='semana' ? `
+          <input type="date" class="inputStyle" style="width:100%; margin-bottom:6px;" value="${f.semana}" onchange="actualizarResumenFiltro('semana', this.value)" />
+          <div style="font-size:12px; color:var(--ink-soft); margin-bottom:14px;">Elegí cualquier día de la semana. ${f.semana ? `<b>${etiquetaSemanaResumen(f.semana)}</b> (lunes a domingo).` : ""}</div>
         ` : `
           <input type="date" class="inputStyle" style="width:100%; margin-bottom:14px;" value="${f.dia}" onchange="actualizarResumenFiltro('dia', this.value)" />
-        `}
+        `)}
 
         <label style="font-size:12px; font-weight:600; color:var(--ink-soft); display:block; margin-bottom:5px;">Tipo</label>
         <div style="display:flex; gap:8px; margin-bottom:20px;">
           <button type="button" onclick="actualizarResumenFiltro('tipo','todos')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.tipo==='todos'?"var(--accent)":"var(--line)"}; background:${f.tipo==='todos'?"var(--accent-soft)":"#fff"}; color:${f.tipo==='todos'?"var(--accent)":"var(--ink-soft)"};">Todos</button>
           <button type="button" onclick="actualizarResumenFiltro('tipo','unica')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.tipo==='unica'?"var(--accent)":"var(--line)"}; background:${f.tipo==='unica'?"var(--accent-soft)":"#fff"}; color:${f.tipo==='unica'?"var(--accent)":"var(--ink-soft)"};">Único</button>
           <button type="button" onclick="actualizarResumenFiltro('tipo','normal')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.tipo==='normal'?"var(--accent)":"var(--line)"}; background:${f.tipo==='normal'?"var(--accent-soft)":"#fff"}; color:${f.tipo==='normal'?"var(--accent)":"var(--ink-soft)"};">Jornada normal</button>
+        </div>
+
+        <label style="font-size:12px; font-weight:600; color:var(--ink-soft); display:block; margin:-8px 0 5px 0;">Actividades suspendidas</label>
+        <div style="display:flex; gap:8px; margin-bottom:20px;">
+          <button type="button" onclick="actualizarResumenFiltro('suspendidas','incluir')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.suspendidas!=='excluir'?"var(--accent)":"var(--line)"}; background:${f.suspendidas!=='excluir'?"var(--accent-soft)":"#fff"}; color:${f.suspendidas!=='excluir'?"var(--accent)":"var(--ink-soft)"};">Incluirlas (marcadas)</button>
+          <button type="button" onclick="actualizarResumenFiltro('suspendidas','excluir')" style="flex:1; padding:8px; border-radius:7px; font-size:13px; font-weight:600; border:1.5px solid ${f.suspendidas==='excluir'?"var(--accent)":"var(--line)"}; background:${f.suspendidas==='excluir'?"var(--accent-soft)":"#fff"}; color:${f.suspendidas==='excluir'?"var(--accent)":"var(--ink-soft)"};">Sacarlas</button>
         </div>
 
         <button onclick="buscarResumen()" style="width:100%; background:var(--accent); color:#fff; border-radius:8px; padding:11px; font-weight:700; font-size:13.5px; margin-bottom:${resumenResultados ? "14px" : "0"};">Buscar actividades</button>
@@ -1548,7 +2118,7 @@ function resumenModalHtml(){
                 ${resumenResultados.map(a => `
                   <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer;">
                     <input type="checkbox" style="margin-top:2px;" ${resumenSeleccion.has(a.id)?"checked":""} onchange="toggleResumenSeleccion('${a.id}')" />
-                    <span style="font-size:12.5px;"><b>${escapeHtml(a.titulo||"(sin título)")}</b><br/><span style="color:var(--ink-soft);">${a.fecha}${a.horaInicio?" · "+a.horaInicio:""}${a.sede?" · "+escapeHtml(a.sede):""}</span></span>
+                    <span style="font-size:12.5px;"><b>${escapeHtml(a.titulo||"(sin título)")}</b>${a.suspendida?" <b style='color:#b3261e; font-size:10px;'>SUSPENDIDA</b>":""}<br/><span style="color:var(--ink-soft);">${a.fecha}${a.horaInicio?" · "+a.horaInicio:""}${a.sede?" · "+escapeHtml(a.sede):""}</span></span>
                   </label>
                 `).join("")}
               </div>
@@ -1565,20 +2135,20 @@ function descargarResumenWord(){
   const f = resumenFiltros;
   let filtradas = (resumenResultados||[]).filter(a => resumenSeleccion.has(a.id));
 
-  const periodoLabel = f.periodoTipo === "dia" ? f.dia : `${MESES[parseInt(f.mes)-1]} ${f.anio}`;
+  const periodoLabel = f.periodoTipo === "dia" ? f.dia : (f.periodoTipo === "semana" ? etiquetaSemanaResumen(f.semana) : `${MESES[parseInt(f.mes)-1]} ${f.anio}`);
   const programaLabel = f.programaId === "todos" ? "Todos los programas" : (programaById(f.programaId)||{}).nombre || f.programaId;
   const tipoLabel = f.tipo === "todos" ? "Único y Jornada normal" : (f.tipo === "unica" ? "Evento único" : "Jornada normal");
 
   let body = [];
   body.push(`<h1>Resumen de actividades — Agenda GOPIA</h1>`);
-  body.push(`<p><b>Programa:</b> ${programaLabel}<br/><b>Período:</b> ${periodoLabel}<br/><b>Tipo:</b> ${tipoLabel}</p>`);
+  body.push(`<p><b>Programa:</b> ${programaLabel}<br/><b>Período:</b> ${periodoLabel}<br/><b>Tipo:</b> ${tipoLabel}${f.suspendidas==="excluir" ? "<br/><b>Suspendidas:</b> no incluidas" : ""}</p>`);
 
   if(filtradas.length === 0){
     body.push(`<p><i>No hay actividades cargadas que coincidan con estos filtros.</i></p>`);
   } else {
     filtradas.forEach(a => {
       const progs = (a.programaIds||[a.programaId]).map(id => (programaById(id)||{}).corto || id).join(", ");
-      body.push(`<h3>${escapeHtml(a.titulo||"(sin título)")}</h3>`);
+      body.push(`<h3>${escapeHtml(a.titulo||"(sin título)")}${a.suspendida?" — ACTIVIDAD SUSPENDIDA":""}</h3>`);
       body.push(`<p>`
         + `<b>Fecha:</b> ${a.fecha}${a.fechaHasta ? " a " + a.fechaHasta : ""}<br/>`
         + (a.horaInicio ? `<b>Horario:</b> ${a.horaInicio}${a.horaFin ? " a " + a.horaFin : ""}<br/>` : "")
@@ -1607,7 +2177,7 @@ function descargarResumenWord(){
   const blob = new Blob(['\ufeff', htmlDoc], {type:"application/msword"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "Resumen_Agenda_GOPIA.doc";
+  a.href = url; a.download = `Resumen_Agenda_GOPIA_${f.periodoTipo==="dia" ? f.dia : (f.periodoTipo==="semana" ? "semana_"+rangoSemana(f.semana).desde : f.anio+"-"+f.mes)}.doc`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
   cerrarModal();
@@ -1622,7 +2192,8 @@ function viewGrupoModalHtml(){
           <span style="font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase;">🔗 Actividad compartida</span>
           <button onclick="cerrarModal()" style="font-size:18px;">✕</button>
         </div>
-        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0;">${escapeHtml(a.titulo)}</h2>
+        ${grupoMiembros.every(m=>m.suspendida)?`<div style="display:inline-block; margin-bottom:6px; font-size:11px; font-weight:800; color:#b3261e; border:1.5px solid #b3261e; border-radius:6px; padding:2px 8px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
+        <h2 style="font-size:18px; font-weight:700; margin:0 0 10px 0;${grupoMiembros.every(m=>m.suspendida)?" text-decoration:line-through; opacity:.6;":""}">${escapeHtml(a.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px; margin-bottom:16px;">
           ${a.sede?`<div>📍 ${escapeHtml(a.sede)}</div>`:""}
           <div class="mono">${a.fecha}${a.horaInicio?` · ${a.horaInicio}${a.horaFin?` a ${a.horaFin}`:""}`:""}</div>
@@ -1671,7 +2242,8 @@ function viewModalHtml(){
           <span style="writing-mode:vertical-rl; text-orientation:mixed; color:#fff; font-size:10.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;">${p.sigla || p.corto}</span>
         </div>
         <button onclick="cerrarModal()" style="position:absolute; top:10px; left:14px; font-size:18px;">✕</button>
-        <h2 style="font-size:18px; font-weight:700; margin:28px 0 12px 0;">${escapeHtml(form.titulo)}</h2>
+        ${form.suspendida?`<div style="margin-top:28px; display:inline-block; font-size:11px; font-weight:800; color:#b3261e; border:1.5px solid #b3261e; border-radius:6px; padding:2px 8px;">⛔ ACTIVIDAD SUSPENDIDA</div>`:""}
+        <h2 style="font-size:18px; font-weight:700; margin:${form.suspendida?"8px":"28px"} 0 12px 0;${form.suspendida?" text-decoration:line-through; opacity:.6;":""}">${escapeHtml(form.titulo)}</h2>
         <div style="font-size:13px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px;">
           ${form.sede?`<div>📍 ${escapeHtml(form.sede)}</div>`:""}
           ${(form.direcciones&&form.direcciones.length) ? form.direcciones.filter(Boolean).map(d=>`<div>🧭 ${escapeHtml(d)}</div>`).join("") : ""}
@@ -1693,8 +2265,9 @@ function viewModalHtml(){
 }
 
 function formModalHtml(){
+  // El fondo NO cierra el cuadro: se cierra solo con ✕ o al guardar (para no perder lo cargado por un clic de más).
   return `
-    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
       <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:480px; max-height:88vh; overflow-y:auto;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h2 style="font-size:17px; font-weight:700; margin:0;">${form.id ? "Editar actividad" : "Nueva actividad"}</h2>
@@ -1703,6 +2276,11 @@ function formModalHtml(){
 
         <div style="margin-bottom:10px;"><label class="fieldLabel">Actividad *</label>
           <input class="inputStyle" value="${escapeHtml(form.titulo)}" oninput="updateForm('titulo', this.value)" placeholder="Ej: Taller de fotografía" />
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px; margin:0 0 10px 0; padding:8px 10px; border:1px dashed #b3261e; border-radius:8px; background:${form.suspendida?"#fdecea":"transparent"};">
+          <input type="checkbox" id="suspendida" ${form.suspendida?"checked":""} onchange="setSuspendida(this.checked)" />
+          <label for="suspendida" style="font-size:13px; font-weight:700; color:#b3261e; cursor:pointer;">⛔ Actividad suspendida</label>
         </div>
 
         <div style="margin-bottom:10px;">
@@ -1950,8 +2528,9 @@ function viewTareaModalHtml(){
 
 function formTareaModalHtml(){
   const t = tareaForm;
+  // El fondo NO cierra el cuadro: se cierra solo con ✕ o al guardar.
   return `
-    <div onclick="cerrarModal()" style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
+    <div style="position:fixed; inset:0; background:rgba(34,38,43,0.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;">
       <div onclick="event.stopPropagation()" style="background:#fff; border-radius:14px; padding:22px; width:100%; max-width:440px; max-height:88vh; overflow-y:auto;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h2 style="font-size:17px; font-weight:700; margin:0;">${t.id ? "Editar tarea" : "Nueva tarea"}</h2>

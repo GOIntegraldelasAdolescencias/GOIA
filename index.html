@@ -314,6 +314,17 @@ let busqueda = "";
 let filtroTipo = new Set(["unica"]);
 let verSuspendidas = true; // false = las actividades suspendidas se ocultan de la agenda y de la búsqueda
 function toggleVerSuspendidas(){ verSuspendidas = !verSuspendidas; renderRoot(); }
+// Jornadas normales: se pueden ocultar desde una fecha (no se borran, siguen en la base). Se recuerda en este navegador.
+let ocultarNormales = true;
+let normalesDesde = "2026-10-01";
+try{
+  const g = localStorage.getItem("goia_ocultar_normales"); if(g !== null) ocultarNormales = g === "1";
+  const d = localStorage.getItem("goia_normales_desde"); if(d && /^\d{4}-\d{2}-\d{2}$/.test(d)) normalesDesde = d;
+}catch(e){}
+function guardarOcultarNormales(){ try{ localStorage.setItem("goia_ocultar_normales", ocultarNormales?"1":"0"); localStorage.setItem("goia_normales_desde", normalesDesde); }catch(e){} }
+function toggleOcultarNormales(){ ocultarNormales = !ocultarNormales; guardarOcultarNormales(); renderRoot(); }
+function setNormalesDesde(v){ if(/^\d{4}-\d{2}-\d{2}$/.test(v)){ normalesDesde = v; guardarOcultarNormales(); renderRoot(); } }
+function normalOculta(a){ return ocultarNormales && categoriaTipo(a.tipoRepeticion) === "normal" && !!a.fecha && a.fecha >= normalesDesde; }
 let detailDay = dateKey(new Date());
 let form = emptyForm();
 let modalOpen = false;
@@ -343,6 +354,7 @@ function buscarResumen(){
     if(f.programaId !== "todos" && !(a.programaIds||[a.programaId]).includes(f.programaId)) return false;
     if(f.tipo !== "todos" && categoriaTipo(a.tipoRepeticion) !== f.tipo) return false;
     if(f.suspendidas === "excluir" && a.suspendida) return false;
+    if(normalOculta(a)) return false;
     if(f.periodoTipo === "dia"){
       if(a.fecha !== f.dia) return false;
     } else if(f.periodoTipo === "semana"){
@@ -1302,6 +1314,7 @@ function porDia(){
     if(!filtro.has(a.programaId)) continue;
     if(!filtroTipo.has(categoriaTipo(a.tipoRepeticion))) continue;
     if(!verSuspendidas && a.suspendida) continue;
+    if(normalOculta(a)) continue;
     if(!map[a.fecha]) map[a.fecha]=[];
     map[a.fecha].push(a);
   }
@@ -1502,6 +1515,13 @@ function renderAgenda(consolidado, dias, today){
           style="padding:6px 12px; border-radius:999px; font-size:13px; font-weight:500;
           border:1.5px solid ${verSuspendidas?"#b3261e":"var(--line)"}; background:${verSuspendidas?"#fdecea":"#fff"}; color:${verSuspendidas?"#b3261e":"var(--ink-soft)"};">${verSuspendidas?"⛔ Suspendidas: visibles":"⛔ Suspendidas: ocultas"}
         </button>
+        <span style="display:inline-flex; align-items:center; gap:6px;">
+          <button class="chip" onclick="toggleOcultarNormales()" title="Clic: ocultar o mostrar las jornadas normales a partir de la fecha elegida. No se borran."
+            style="padding:6px 12px; border-radius:999px; font-size:13px; font-weight:500;
+            border:1.5px solid ${ocultarNormales?"var(--accent)":"var(--line)"}; background:${ocultarNormales?"var(--accent-soft)":"#fff"}; color:${ocultarNormales?"var(--accent)":"var(--ink-soft)"};">${ocultarNormales?"🙈 Jornadas normales: ocultas desde":"👁 Jornadas normales: visibles"}
+          </button>
+          ${ocultarNormales ? `<input type="date" value="${normalesDesde}" onchange="setNormalesDesde(this.value)" style="font-size:12.5px; padding:4px 6px; border:1px solid var(--line); border-radius:8px;">` : ""}
+        </span>
       </div>
     </div>
 
@@ -1622,7 +1642,7 @@ function renderDia(dias){
 function renderResultadosBusqueda(q){
   const texto = q.trim().toLowerCase();
   const resultados = actividades
-    .filter(a => filtro.has(a.programaId) && (verSuspendidas || !a.suspendida) && coincideBusqueda(a, texto))
+    .filter(a => filtro.has(a.programaId) && (verSuspendidas || !a.suspendida) && !normalOculta(a) && coincideBusqueda(a, texto))
     .sort((a,b)=> (a.fecha+(a.horaInicio||"")).localeCompare(b.fecha+(b.horaInicio||"")));
   const CAP = 300;
   const mostrar = resultados.slice(0, CAP);
